@@ -1,6 +1,8 @@
 """Thin wrappers over git commands used by sqa-tool."""
 
+import difflib
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 
@@ -36,10 +38,32 @@ def is_repo(project_root: Path) -> bool:
     return out.strip() == "true"
 
 
+def has_commits(project_root: Path) -> bool:
+    """True iff HEAD resolves to a commit."""
+    try:
+        _git(project_root, "rev-parse", "HEAD")
+    except GitError:
+        return False
+    return True
+
+
 def ls_files(project_root: Path) -> list[str]:
     """Return project-relative paths of all git-tracked files in the project root."""
     out = _git(project_root, "ls-files")
     return [line for line in out.splitlines() if line]
+
+
+def walk_tracked_files(project_root: Path) -> Iterator[tuple[str, Path]]:
+    """Yield (rel_path, abs_path) for every git-tracked file that exists on disk.
+
+    Returns nothing if `project_root` isn't a git working tree.
+    """
+    if not is_repo(project_root):
+        return
+    for rel in ls_files(project_root):
+        abs_path = project_root / rel
+        if abs_path.is_file():
+            yield rel, abs_path
 
 
 def hash_object(project_root: Path, rel_paths: list[str]) -> dict[str, str]:
@@ -77,19 +101,24 @@ def diff_blob_to_file(project_root: Path, blob: str, rel_path: str) -> str:
     if not file_exists:
         old = _git(project_root, "show", blob)
         return _format_synthetic_diff(rel_path, old, "")
-    current = _git(project_root, "hash-object", "-w", "--", str(file_path)).strip()
-    if current == blob:
-        return ""
-    return _git(project_root, "diff", blob, current, "--", rel_path)
+    return _git(project_root, "diff", blob, "--", rel_path)
 
 
 def _format_synthetic_diff(rel_path: str, old: str, new: str) -> str:
-    """Minimal unified-diff synthesis for the no-prior or deleted-file cases."""
-    head = f"--- a/{rel_path}\n+++ b/{rel_path}\n"
-    if not old:
-        body = "".join(f"+{line}\n" for line in new.splitlines())
-    elif not new:
-        body = "".join(f"-{line}\n" for line in old.splitlines())
-    else:
-        body = ""
-    return head + body
+    """Unified diff for the no-prior or deleted-file cases.
+
+    Uses difflib.unified_diff for proper '@@' hunk headers, and appends
+    the '\\ No newline at end of file' marker where the source content
+    didn't end with a newline (matching git's output).
+    """
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    out = []
+    for line in difflib.unified_diff(
+        old_lines, new_lines, fromfile=f"a/{rel_path}", tofile=f"b/{rel_path}"
+    ):
+        if line.endswith("\n"):
+            out.append(line)
+        else:
+            out.append(line + "\n\\ No newline at end of file\n")
+    return "".join(out)

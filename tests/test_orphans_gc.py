@@ -2,29 +2,13 @@
 
 import json
 import os
-import subprocess
 import time
 from pathlib import Path
 
+from conftest import _git, _run
+
 from sqa_tool import findings
-from sqa_tool.cli import main as cli_main
 from sqa_tool.commands.gc import parse_duration
-
-
-def _git(project: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
-
-
-def _run(project: Path, *argv: str, expected_exit: int = 0) -> int:
-    cwd = Path.cwd()
-    os.chdir(project)
-    try:
-        rc = cli_main(list(argv))
-    finally:
-        os.chdir(cwd)
-    if expected_exit is not None:
-        assert rc == expected_exit, f"sqa-tool {' '.join(argv)} exited {rc}"
-    return rc
 
 
 def test_parse_duration():
@@ -140,6 +124,31 @@ def test_orphans_reports_finding_without_anchor(initialized: Path, capsys):
     assert fid in out["reported"]["findings_without_anchors"]
 
 
+def test_orphans_does_not_report_resolved_findings(initialized: Path, capsys):
+    # Resolved findings have their anchors stripped by design — they should
+    # NOT show up in findings_without_anchors. Only OPEN findings missing an
+    # anchor are real orphans.
+    capsys.readouterr()
+    _run(
+        initialized,
+        "record-finding",
+        "--message=will be resolved",
+        "--anchor=src/sample.py",
+        "--related=src/sample.py",
+    )
+    fid = capsys.readouterr().out.strip()
+
+    # Resolve it — this strips the anchor but keeps the JSON file.
+    _run(initialized, "resolve", fid, "--rationale=fixed")
+
+    capsys.readouterr()
+    _run(initialized, "orphans")
+    out = json.loads(capsys.readouterr().out)
+    assert fid not in out["reported"]["findings_without_anchors"], (
+        f"Resolved finding {fid} should not appear as an orphan"
+    )
+
+
 def test_orphans_reports_stale_related_files(initialized: Path, capsys):
     # Record a finding referring to a file that doesn't exist.
     capsys.readouterr()
@@ -161,17 +170,15 @@ def test_orphans_reports_stale_related_files(initialized: Path, capsys):
     assert any(item["id"] == fid for item in stale)
 
 
-def test_gc_default_keeps_everything(initialized: Path, capsys):
+def test_gc_zero_window_deletes_everything(initialized: Path, capsys):
     capsys.readouterr()
     _run(initialized, "record-finding", "--message=x")
     fid = capsys.readouterr().out.strip()
     _run(initialized, "resolve", fid, "--rationale=done")
 
     capsys.readouterr()
-    _run(initialized, "gc")
+    _run(initialized, "gc", "--older-than=0s")
     assert "deleted 1" in capsys.readouterr().out
-    # Without --older-than, default is to delete all resolved (cutoff=None).
-    # The file is now gone.
     assert findings.list_finding_ids(initialized) == []
 
 
@@ -214,6 +221,6 @@ def test_gc_skips_open_findings(initialized: Path, capsys):
     # Don't resolve; leave open.
 
     capsys.readouterr()
-    _run(initialized, "gc")
+    _run(initialized, "gc", "--older-than=0s")
     assert "deleted 0" in capsys.readouterr().out
     assert fid in findings.list_finding_ids(initialized)

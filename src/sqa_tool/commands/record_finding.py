@@ -19,7 +19,16 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
     findings.save_finding(project_root, finding_id, finding)
 
     if args.anchor:
-        target = project_root / args.anchor
+        target = (project_root / args.anchor).resolve()
+        try:
+            target.relative_to(project_root.resolve())
+        except ValueError:
+            print(
+                f"error: anchor target {args.anchor} resolves outside the project root.",
+                flush=True,
+            )
+            findings.delete_finding(project_root, finding_id)
+            return 1
         if not anchors.is_commentable(target):
             print(
                 f"error: anchor target {args.anchor} is not commentable. "
@@ -29,13 +38,20 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
             findings.delete_finding(project_root, finding_id)
             return 1
         # Lock-protected insert (sibling subagents may target the same .sqa.md).
+        # If anything goes wrong, roll back the finding JSON so we don't leave
+        # an orphan in .sqa/findings.
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             target.touch()
         fd = os.open(target, os.O_RDWR)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            anchors.insert_anchor(target, finding_id)
+            try:
+                anchors.insert_anchor(target, finding_id)
+            except Exception as e:
+                findings.delete_finding(project_root, finding_id)
+                print(f"error: failed to insert anchor into {args.anchor}: {e}", flush=True)
+                return 1
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)

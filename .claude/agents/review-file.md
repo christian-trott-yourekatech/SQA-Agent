@@ -1,6 +1,6 @@
 ---
 name: review-file
-description: Review one source file with awareness of prior findings. Records new findings, refreshes/closes/reopens prior ones, and marks the file reviewed.
+description: Review one source file with awareness of prior findings. Records new findings, refreshes/resolves prior ones, and marks the file reviewed.
 tools: Read, Edit, Bash, Grep, Glob
 ---
 

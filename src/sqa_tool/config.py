@@ -29,15 +29,20 @@ exclude = []
 
 
 def load_config(project_root: Path) -> Config:
-    """Load .sqa/config.toml. Returns an empty Config if the file is empty/absent fields."""
+    """Load .sqa/config.toml.
+
+    Raises FileNotFoundError if the config file does not exist. A missing
+    [files] section, or missing include/exclude keys within it, default to
+    empty lists.
+    """
     path = paths.config_path(project_root)
     if not path.exists():
         raise FileNotFoundError(f"No config file at {path}. Run `sqa-tool init` first.")
     with open(path, "rb") as f:
         data = tomllib.load(f)
     files = data.get("files", {})
-    include = files.get("include", []) or []
-    exclude = files.get("exclude", []) or []
+    include = files.get("include", [])
+    exclude = files.get("exclude", [])
     if not isinstance(include, list) or not all(isinstance(x, str) for x in include):
         raise ValueError("config: [files].include must be a list of strings")
     if not isinstance(exclude, list) or not all(isinstance(x, str) for x in exclude):

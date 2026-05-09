@@ -5,7 +5,7 @@ import re
 import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from sqa_tool import paths
 
@@ -13,14 +13,14 @@ Severity = Literal["info", "warning", "error"]
 Triage = Literal["auto", "interactive", "ignore"]
 Status = Literal["open", "resolved"]
 
-_VALID_SEVERITIES = {"info", "warning", "error"}
-_VALID_TRIAGES = {"auto", "interactive", "ignore"}
-_VALID_STATUSES = {"open", "resolved"}
+_VALID_SEVERITIES = set(get_args(Severity))
+_VALID_TRIAGES = set(get_args(Triage))
+_VALID_STATUSES = set(get_args(Status))
 
 # RFC4648 base32 alphabet — A-Z2-7, no ambiguous chars.
 ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 ID_LENGTH = 5
-ID_RE = re.compile(r"^[A-Z2-7]{" + str(ID_LENGTH) + r"}$")
+ID_RE = re.compile(rf"^[{re.escape(ID_ALPHABET)}]{{{ID_LENGTH}}}$")
 
 
 @dataclass
@@ -107,6 +107,8 @@ def list_finding_ids(project_root: Path) -> list[str]:
 
 
 def delete_finding(project_root: Path, finding_id: str) -> None:
+    if not is_valid_id(finding_id):
+        raise ValueError(f"Invalid finding ID: {finding_id!r}")
     path = paths.finding_path(project_root, finding_id)
     if path.exists():
         path.unlink()

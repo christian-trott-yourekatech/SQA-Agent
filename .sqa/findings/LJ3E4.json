@@ -1,0 +1,10 @@
+{
+  "message": "No concurrency test despite file_status module being designed around fcntl locks. The module docstring emphasizes 'fcntl-locked read-modify-write' but no test exercises concurrent update/remove from multiple processes to verify locking actually prevents lost writes.",
+  "severity": "warning",
+  "triage": "ignore",
+  "status": "open",
+  "rationale": "Concurrency test for fcntl locks would be slow/clunky and the implementation is straightforward fcntl.flock usage, deemed low-risk. Revisit if we ever observe sync issues in practice.",
+  "related_files": [
+    "tests/test_file_status.py"
+  ]
+}

@@ -11,7 +11,7 @@ _DURATION_RE = re.compile(r"^(\d+)([smhdw])$")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
-def parse_duration(s: str) -> float:
+def parse_duration(s: str) -> int:
     """Parse a duration string like '30d', '24h', '1w'. Returns seconds."""
     m = _DURATION_RE.match(s.strip())
     if not m:
@@ -22,14 +22,12 @@ def parse_duration(s: str) -> float:
 
 
 def run(project_root: Path, args: argparse.Namespace) -> int:
-    cutoff: float | None = None
-    if args.older_than:
-        try:
-            window = parse_duration(args.older_than)
-        except ValueError as e:
-            print(f"error: {e}", flush=True)
-            return 1
-        cutoff = time.time() - window
+    try:
+        window = parse_duration(args.older_than)
+    except ValueError as e:
+        print(f"error: {e}", flush=True)
+        return 1
+    cutoff = time.time() - window
 
     deleted = []
     for fid in findings.list_finding_ids(project_root):
@@ -39,12 +37,10 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
             continue
         if f.status != "resolved":
             continue
-        path = paths.finding_path(project_root, fid)
-        if cutoff is not None:
-            mtime = path.stat().st_mtime
-            if mtime > cutoff:
-                continue
-        path.unlink()
+        mtime = paths.finding_path(project_root, fid).stat().st_mtime
+        if mtime > cutoff:
+            continue
+        findings.delete_finding(project_root, fid)
         deleted.append(fid)
 
     print(

@@ -84,18 +84,20 @@ def run(project_root: Path) -> int:
         print(f"error: {sqa} already exists; refusing to overwrite", flush=True)
         return 1
 
+    # Scaffold .claude/ first so a partial failure here doesn't leave .sqa/
+    # behind to block subsequent init runs.
+    try:
+        installed, skipped = _scaffold_claude_dirs(project_root)
+    except FileNotFoundError as e:
+        print(f"warning: skill/agent scaffolding skipped — {e}", flush=True)
+        installed, skipped = [], []
+
     sqa.mkdir(parents=True)
     paths.findings_dir(project_root).mkdir()
     paths.config_path(project_root).write_text(DEFAULT_CONFIG_TEXT)
     paths.file_status_path(project_root).write_text("{}\n")
 
     print(f"Initialized {sqa.relative_to(project_root)}/", flush=True)
-
-    try:
-        installed, skipped = _scaffold_claude_dirs(project_root)
-    except FileNotFoundError as e:
-        print(f"warning: skill/agent scaffolding skipped — {e}", flush=True)
-        installed, skipped = [], []
 
     if installed:
         print(f"Installed {len(installed)} skill/agent entry(s) under .claude/:", flush=True)

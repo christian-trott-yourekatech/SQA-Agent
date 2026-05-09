@@ -9,17 +9,21 @@ You are running a project review using `sqa-tool` and the `review-file` subagent
 
 ## Your job per invocation
 
-1. **Run orphans cleanup.** Invoke `sqa-tool orphans`. The tool auto-fixes the deterministic class. If the `reported.*` lists are non-empty, dispatch a `fix-orphans` subagent before proceeding with the rest of the review. If they're empty, skip directly to step 2.
+1. **Pre-review quality check.** Run the project's deterministic quality-check command **before** any LLM work. Getting deterministic-tool issues out of the way first means the review agent doesn't burn tokens flagging things a linter or type-checker would catch, and the source it reviews is in a known-good state.
 
-2. **Pick parallelism.** Ask the user (in chat) what `max_agents` to use, or use `4` as the default if running non-interactively. Higher = faster but more aggressive on quota.
+   *Project-specific check command (edit this line for your project):* `./runtools.sh`
 
-3. **Drive the bounded review loop.** Repeat:
+   If the check fails, **stop and surface the failures to the user.** Do not proceed to the LLM review until the project is green — fix the deterministic issues first (via direct edits or a separate session). The reviewer's value is in finding things deterministic tools miss; it shouldn't be wasted on items the tools already flag.
+
+2. **Run orphans cleanup.** Invoke `sqa-tool orphans`. The tool auto-fixes the deterministic class. If the `reported.*` lists are non-empty, dispatch a `fix-orphans` subagent before proceeding. If they're empty, skip directly to step 3.
+
+3. **Pick parallelism.** Ask the user (in chat) what `max_agents` to use, or use `4` as the default if running non-interactively. Higher = faster but more aggressive on quota.
+
+4. **Drive the bounded review loop.** Repeat:
    - Run `sqa-tool needs-review --count`. If `0`, exit the loop.
    - Run `sqa-tool needs-review --limit=<max_agents>` to get the next batch of files.
    - Spawn one `review-file` subagent per file in the batch, **in parallel** (single message with multiple Agent tool calls). Wait for all to complete.
    - Continue until `needs-review --count` returns `0` or the safety cap (50 batches) is reached.
-
-4. **Optional post-check.** If this project uses a quality-check command (e.g. `./runtools.sh`, `make check`, `npm test`), invoke it via Bash. Edit this skill to set the actual command for the project, or remove the post-check step if not needed.
 
 5. **Report summary.** Run `sqa-tool status` and present the output to the user.
 

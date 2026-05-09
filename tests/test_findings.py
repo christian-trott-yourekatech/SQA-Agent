@@ -57,9 +57,17 @@ def test_no_id_field_in_json(initialized: Path):
     assert "id" not in raw
 
 
-def test_save_invalid_severity(initialized: Path):
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("severity", "critical"),
+        ("triage", "bogus"),
+        ("status", "pending"),
+    ],
+)
+def test_save_invalid_field(initialized: Path, field: str, value: str):
     fid = findings.alloc_id(initialized)
-    f = findings.Finding(message="x", severity="critical")  # type: ignore[arg-type]
+    f = findings.Finding(message="x", **{field: value})  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         findings.save_finding(initialized, fid, f)
 

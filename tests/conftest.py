@@ -1,13 +1,34 @@
 """Shared fixtures: a temp project that's a real git repo with .sqa/ initialized."""
 
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from sqa_tool.cli import main as cli_main
+
 
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _run(project: Path, *argv: str, expected_exit: int = 0) -> int:
+    cwd = Path.cwd()
+    os.chdir(project)
+    try:
+        rc = cli_main(list(argv))
+    finally:
+        os.chdir(cwd)
+    assert rc == expected_exit, f"sqa-tool {' '.join(argv)} exited {rc}"
+    return rc
+
+
+def _capture(capsys, project: Path, *argv: str, expected_exit: int = 0) -> str:
+    """Run sqa-tool and return its captured stdout. Drains any prior buffered output first."""
+    capsys.readouterr()
+    _run(project, *argv, expected_exit=expected_exit)
+    return capsys.readouterr().out
 
 
 @pytest.fixture
@@ -29,12 +50,5 @@ def initialized(project: Path) -> Path:
     """Project with sqa-tool init already run."""
     from sqa_tool.commands.init import run as init_run
 
-    cwd_save = Path.cwd()
-    import os
-
-    os.chdir(project)
-    try:
-        init_run(project)
-    finally:
-        os.chdir(cwd_save)
+    init_run(project)
     return project

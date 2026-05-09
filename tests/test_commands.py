@@ -1,31 +1,12 @@
 """Integration tests: run CLI subcommands against a real temp project."""
 
 import json
-import os
 import subprocess
 from pathlib import Path
 
-from sqa_tool.cli import main as cli_main
+from conftest import _capture, _run
 
-
-def _run(project: Path, *argv: str, expected_exit: int = 0) -> int:
-    cwd = Path.cwd()
-    os.chdir(project)
-    try:
-        rc = cli_main(list(argv))
-    finally:
-        os.chdir(cwd)
-    if expected_exit is not None:
-        assert rc == expected_exit, f"sqa-tool {' '.join(argv)} exited {rc}"
-    return rc
-
-
-def _capture(project: Path, *argv: str, capsys=None) -> str:
-    if capsys is None:
-        raise RuntimeError("capsys fixture required")
-    capsys.readouterr()  # drain prior
-    _run(project, *argv)
-    return capsys.readouterr().out
+from sqa_tool import findings
 
 
 def test_init(project: Path):
@@ -71,20 +52,34 @@ def test_init_refuses_overwrite(project: Path):
     assert rc == 1
 
 
-def test_record_and_show_finding(initialized: Path, capsys):
+def test_init_refuses_non_git(tmp_path: Path, capsys):
     capsys.readouterr()
-    _run(
+    rc = _run(tmp_path, "init", expected_exit=1)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "git repository" in err
+
+
+def test_init_refuses_repo_without_commits(tmp_path: Path, capsys):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    capsys.readouterr()
+    rc = _run(tmp_path, "init", expected_exit=1)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no commits" in err
+
+
+def test_record_and_show_finding(initialized: Path, capsys):
+    fid = _capture(
+        capsys,
         initialized,
         "record-finding",
         "--message=Use isinstance instead of type()",
         "--severity=warning",
         "--related=src/sample.py",
-    )
-    fid = capsys.readouterr().out.strip()
-    assert len(fid) == 5
-    capsys.readouterr()
-    _run(initialized, "show-finding", fid)
-    payload = json.loads(capsys.readouterr().out)
+    ).strip()
+    assert findings.is_valid_id(fid)
+    payload = json.loads(_capture(capsys, initialized, "show-finding", fid))
     assert payload["id"] == fid
     assert payload["message"] == "Use isinstance instead of type()"
     assert payload["severity"] == "warning"
@@ -94,15 +89,14 @@ def test_record_and_show_finding(initialized: Path, capsys):
 
 
 def test_record_finding_with_anchor_in_sqa_md(initialized: Path, capsys):
-    capsys.readouterr()
-    _run(
+    fid = _capture(
+        capsys,
         initialized,
         "record-finding",
         "--message=Module is overcomplicated",
         "--anchor=src/.sqa.md",
         "--related=src/sample.py",
-    )
-    fid = capsys.readouterr().out.strip()
+    ).strip()
     md = (initialized / "src" / ".sqa.md").read_text()
     assert f"sqa: {fid}" in md
 
@@ -125,53 +119,37 @@ def test_record_finding_anchor_uncommentable_fails(initialized: Path, capsys):
 
 def test_list_findings_filters(initialized: Path, capsys):
     # Record three findings with different triage states.
-    capsys.readouterr()
-    _run(initialized, "record-finding", "--message=A", "--severity=info")
-    a_id = capsys.readouterr().out.strip()
-    _run(initialized, "record-finding", "--message=B", "--severity=info")
-    b_id = capsys.readouterr().out.strip()
-    _run(initialized, "record-finding", "--message=C", "--severity=info")
-    c_id = capsys.readouterr().out.strip()
+    a_id = _capture(capsys, initialized, "record-finding", "--message=A", "--severity=info").strip()
+    b_id = _capture(capsys, initialized, "record-finding", "--message=B", "--severity=info").strip()
+    c_id = _capture(capsys, initialized, "record-finding", "--message=C", "--severity=info").strip()
 
     _run(initialized, "triage", a_id, "auto", "--rationale=easy fix")
     _run(initialized, "triage", b_id, "ignore", "--rationale=intentional")
 
-    capsys.readouterr()
-    _run(initialized, "list-findings")
-    all_findings = json.loads(capsys.readouterr().out)
+    all_findings = json.loads(_capture(capsys, initialized, "list-findings"))
     assert len(all_findings) == 3
 
-    capsys.readouterr()
-    _run(initialized, "list-findings", "--triage=auto")
-    auto = json.loads(capsys.readouterr().out)
+    auto = json.loads(_capture(capsys, initialized, "list-findings", "--triage=auto"))
     assert len(auto) == 1
     assert auto[0]["id"] == a_id
 
-    capsys.readouterr()
-    _run(initialized, "list-findings", "--triage=untriaged")
-    untriaged = json.loads(capsys.readouterr().out)
+    untriaged = json.loads(_capture(capsys, initialized, "list-findings", "--triage=untriaged"))
     assert len(untriaged) == 1
     assert untriaged[0]["id"] == c_id
 
-    capsys.readouterr()
-    _run(initialized, "list-findings", "--count")
-    assert capsys.readouterr().out.strip() == "3"
+    assert _capture(capsys, initialized, "list-findings", "--count").strip() == "3"
 
-    capsys.readouterr()
-    _run(initialized, "list-findings", "--limit=2")
-    limited = json.loads(capsys.readouterr().out)
+    limited = json.loads(_capture(capsys, initialized, "list-findings", "--limit=2"))
     assert len(limited) == 2
 
 
 def test_status(initialized: Path, capsys):
-    capsys.readouterr()
-    _run(initialized, "record-finding", "--message=x", "--severity=warning")
-    fid = capsys.readouterr().out.strip()
+    fid = _capture(
+        capsys, initialized, "record-finding", "--message=x", "--severity=warning"
+    ).strip()
     _run(initialized, "triage", fid, "auto", "--rationale=easy")
 
-    capsys.readouterr()
-    _run(initialized, "status")
-    s = json.loads(capsys.readouterr().out)
+    s = json.loads(_capture(capsys, initialized, "status"))
     assert s["total"] == 1
     assert s["by_triage"]["auto"] == 1
     assert s["by_severity"]["warning"] == 1
@@ -192,25 +170,19 @@ def _set_include_globs(project: Path, *patterns: str) -> None:
 
 def test_needs_review_initial_lists_all(initialized: Path, capsys):
     _set_include_globs(initialized, "src/**/*.py")
-    capsys.readouterr()
-    _run(initialized, "needs-review")
-    out = capsys.readouterr().out.strip().splitlines()
+    out = _capture(capsys, initialized, "needs-review").strip().splitlines()
     assert out == ["src/sample.py"]
 
 
 def test_needs_review_count(initialized: Path, capsys):
     _set_include_globs(initialized, "src/**/*.py")
-    capsys.readouterr()
-    _run(initialized, "needs-review", "--count")
-    assert capsys.readouterr().out.strip() == "1"
+    assert _capture(capsys, initialized, "needs-review", "--count").strip() == "1"
 
 
 def test_mark_reviewed_then_needs_review_empty(initialized: Path, capsys):
     _set_include_globs(initialized, "src/**/*.py")
     _run(initialized, "mark-reviewed", "src/sample.py")
-    capsys.readouterr()
-    _run(initialized, "needs-review", "--count")
-    assert capsys.readouterr().out.strip() == "0"
+    assert _capture(capsys, initialized, "needs-review", "--count").strip() == "0"
 
 
 def test_needs_review_after_edit(initialized: Path, capsys):
@@ -218,22 +190,19 @@ def test_needs_review_after_edit(initialized: Path, capsys):
     _run(initialized, "mark-reviewed", "src/sample.py")
     # Edit file
     (initialized / "src" / "sample.py").write_text("def hello(): return 'edited'\n")
-    capsys.readouterr()
-    _run(initialized, "needs-review")
-    assert capsys.readouterr().out.strip() == "src/sample.py"
+    assert _capture(capsys, initialized, "needs-review").strip() == "src/sample.py"
 
 
 def test_resolve_removes_anchor(initialized: Path, capsys):
     sub = subprocess.run
     # Insert an anchor in the source file via record-finding's --anchor flow.
-    capsys.readouterr()
-    _run(
+    fid = _capture(
+        capsys,
         initialized,
         "record-finding",
         "--message=fix me",
         "--anchor=src/sample.py",
-    )
-    fid = capsys.readouterr().out.strip()
+    ).strip()
     assert f"sqa: {fid}" in (initialized / "src" / "sample.py").read_text()
     # Commit so git tracks the anchor.
     sub(["git", "add", "."], cwd=initialized, check=True, capture_output=True)
@@ -249,28 +218,24 @@ def test_resolve_removes_anchor(initialized: Path, capsys):
 
 def test_findings_for_file_includes_ancestor_scope(initialized: Path, capsys):
     # Create a file-scope finding directly anchored in src/.sqa.md with related src/sample.py.
-    capsys.readouterr()
-    _run(
+    module_id = _capture(
+        capsys,
         initialized,
         "record-finding",
         "--message=Module-level concern",
         "--anchor=src/.sqa.md",
         "--related=src/sample.py",
-    )
-    module_id = capsys.readouterr().out.strip()
+    ).strip()
     # Create a file-scope finding directly anchored in src/sample.py.
-    capsys.readouterr()
-    _run(
+    file_id = _capture(
+        capsys,
         initialized,
         "record-finding",
         "--message=File-level concern",
         "--anchor=src/sample.py",
-    )
-    file_id = capsys.readouterr().out.strip()
+    ).strip()
 
-    capsys.readouterr()
-    _run(initialized, "findings-for-file", "src/sample.py")
-    items = json.loads(capsys.readouterr().out)
+    items = json.loads(_capture(capsys, initialized, "findings-for-file", "src/sample.py"))
     ids = {it["id"] for it in items}
     assert module_id in ids
     assert file_id in ids

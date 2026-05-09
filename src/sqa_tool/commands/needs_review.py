@@ -1,20 +1,16 @@
 """sqa-tool needs-review — files whose blob has changed since last review."""
 
 import argparse
-import fnmatch
 from pathlib import Path
 
 from sqa_tool import file_status, git_ops
 from sqa_tool.config import load_config
 
 
-def _candidate_files(project_root: Path) -> list[str]:
-    config = load_config(project_root)
-    if not config.include:
-        return []
-    tracked = set(git_ops.ls_files(project_root))
-    included: set[str] = set()
-    for pat in config.include:
+def _glob_to_relpaths(project_root: Path, patterns: list[str], tracked: set[str]) -> set[str]:
+    """Resolve patterns via Path.glob and return the subset that matches tracked files."""
+    out: set[str] = set()
+    for pat in patterns:
         for p in project_root.glob(pat):
             if not p.is_file():
                 continue
@@ -23,13 +19,17 @@ def _candidate_files(project_root: Path) -> list[str]:
             except ValueError:
                 continue
             if rel in tracked:
-                included.add(rel)
-    excluded: set[str] = set()
-    for rel in included:
-        for pat in config.exclude:
-            if fnmatch.fnmatch(rel, pat):
-                excluded.add(rel)
-                break
+                out.add(rel)
+    return out
+
+
+def _candidate_files(project_root: Path) -> list[str]:
+    config = load_config(project_root)
+    if not config.include:
+        return []
+    tracked = set(git_ops.ls_files(project_root))
+    included = _glob_to_relpaths(project_root, config.include, tracked)
+    excluded = _glob_to_relpaths(project_root, config.exclude, tracked)
     return sorted(included - excluded)
 
 

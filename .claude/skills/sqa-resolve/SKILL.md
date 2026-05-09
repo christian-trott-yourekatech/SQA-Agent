@@ -12,6 +12,14 @@ You are running the resolve flow using `sqa-tool` and per-file subagents.
 
 The user invokes you as `sqa-resolve auto` or `sqa-resolve interactive`. If the mode isn't specified, ask the user.
 
+## Phase 0 — Pre-resolve baseline check
+
+Before any triage or resolution work, run the project's quality-check command **once** to establish a clean baseline. Per-finding regression checks during the resolve phase only have value if the project starts green — otherwise pre-existing failures get conflated with regressions.
+
+*Project-specific check command (edit this line for your project):* `./runtools.sh`
+
+If the check fails at baseline, **stop and surface the failures to the user.** Do not proceed to Phase 1 until the project is green. Either fix the failures directly, or have the user fix them in a separate session, before re-invoking `sqa-resolve`. The triage and resolve phases assume a clean starting state.
+
 ## Phase 1 — Autonomous triage
 
 This phase runs in both modes. Triage is autonomous, not user-interactive — its purpose is to *offload* the user, classifying each finding so they only engage with the `interactive`-class set later.
@@ -30,24 +38,28 @@ This phase runs in both modes. Triage is autonomous, not user-interactive — it
 
 1. Run `sqa-tool list-findings --triage=auto --status=open --count`. If `0`, exit with summary.
 2. Get the list: `sqa-tool list-findings --triage=auto --status=open`. Group by anchor file.
-3. Loop in batches of `max_agents` files:
-   - Spawn `resolve-file` subagents in parallel, one per file.
-   - Wait for all.
-4. **Optional post-check.** If this project uses a quality-check command, invoke it via Bash. Edit this skill to set the actual command. If a check fails, surface to the user.
-5. Run `sqa-tool status` and report.
+3. **Resolve files one at a time, sequentially, with per-finding quality checks.** For each file in the group:
+   - Spawn one `resolve-file` subagent. Wait for it to complete before starting the next.
+   - **Do not parallelize this step.** Auto-resolve is the one phase that writes substantively to source code, and many real fixes span files (DRY extractions, renames, SSOT consolidations, following established patterns). Parallel `resolve-file` subagents can race on cross-file edits, produce semantic conflicts, or drift the very pattern they're meant to follow. Serial dispatch preserves correctness.
+   - **After each subagent completes, run the project quality-check command** (defined in Phase 0). If it fails, **fix the regressions before moving on** — either directly via Edit, or by spawning another short-scoped subagent to address them. Do *not* proceed to the next file with a known-failing check; regressions accumulate and become hard to attribute.
+4. After the loop ends, run `sqa-tool status` and report. Optionally run the quality-check one more time as a final sanity check.
 
 ### Mode: `interactive`
 
 1. Run `sqa-tool list-findings --triage=interactive --status=open`. If empty, exit.
 2. **Walk findings sequentially in-skill** (not via subagent — this is the user-engagement endpoint):
-   - For each finding, present the `message` and `rationale` to the user.
-   - Open a multi-turn conversation. The user can:
-     - Say "fix it" or describe how → you apply the fix via Edit/Write, then call `sqa-tool resolve <id> --rationale="..."`.
-     - Say `/skip` → move to the next finding.
-     - Say `/quit` → exit the loop.
-     - Say `/diff` → show `git diff` of unstaged changes.
-     - Say `/commit` → run `git add . && git commit` (with a prompted message).
-3. After loop ends, optionally run the project quality-check command and report `sqa-tool status`.
+   - For each finding, present the `message` and `rationale` to the user, then ask how they'd like to proceed.
+   - The user replies in **natural language**, not slash commands. Interpret intent:
+     - **Apply a fix** — the user says "fix it," "go ahead," "do it," "yes," gives a specific fix instruction, or otherwise indicates the finding should be resolved. Apply the fix via Edit/Write, then call `sqa-tool resolve <id> --rationale="<what was changed and why>"`.
+     - **Skip / move on** — "skip," "next," "leave it," "come back to this later." Move to the next finding without changing state.
+     - **Stop the walk** — "quit," "stop," "let's pause," "I'm done for now." Exit the loop and report progress.
+     - **Show the diff** — "show me the diff," "what's changed," "diff." Run `git diff` (or `git diff --staged` if appropriate) and present it.
+     - **Commit progress** — "commit," "let's commit what we have," "save progress." Stage and commit (`git add .` plus a commit with a message either provided by the user or that you suggest based on the resolved findings).
+     - **Re-classify** — "this is actually auto," "ignore this one," "this isn't really an issue." Use `sqa-tool triage <id> auto|ignore --rationale="..."` to bump the finding into a different bucket. (For ignore, capture *why* in the rationale per the triage guidance.)
+     - **Ask a clarifying question** — answer it; don't assume the answer means "fix it."
+   - Don't expect exact phrasing. Use judgment to interpret what the user wants. If genuinely unclear, ask.
+   - **After every fix that lands, run the project quality-check command** (defined in Phase 0). If it fails, **fix the regressions before moving on to the next finding** — work it through with the user the same way you'd work the original finding. Do not advance to the next finding with a known-failing check; the user benefits from clean attribution between each fix and any breakage it causes.
+3. After the loop ends (or the user stops it), run `sqa-tool status` and report. Optionally run the quality-check one final time as a sanity check.
 
 ## Notes
 

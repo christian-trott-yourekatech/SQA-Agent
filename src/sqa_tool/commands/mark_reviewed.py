@@ -12,6 +12,13 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
     if not target.exists():
         print(f"error: {rel} does not exist", flush=True)
         return 1
+    if rel not in set(git_ops.ls_files(project_root)):
+        print(
+            f"error: {rel} is not tracked by git. mark-reviewed only persists "
+            f"hashes for tracked files (untracked paths are filtered out by needs-review).",
+            flush=True,
+        )
+        return 1
     hashes = git_ops.hash_object(project_root, [rel])
     if rel not in hashes:
         print(f"error: could not compute git blob hash for {rel}", flush=True)

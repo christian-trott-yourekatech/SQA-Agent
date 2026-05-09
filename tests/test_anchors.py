@@ -91,7 +91,6 @@ def test_insert_anchor_python_no_shebang(tmp_path):
 def test_insert_anchor_python_with_shebang(tmp_path):
     path = tmp_path / "x.py"
     path.write_text("#!/usr/bin/env python\ndef f():\n    pass\n")
-    text_after = path.read_text()
     anchors.insert_anchor(path, "ABCDE")
     text_after = path.read_text()
     assert text_after.startswith("#!/usr/bin/env python\n# sqa: ABCDE\n")
@@ -114,7 +113,7 @@ def test_remove_anchor_drops_line_when_only_id(tmp_path):
 def test_remove_anchor_preserves_other_ids(tmp_path):
     path = tmp_path / ".sqa.md"
     path.write_text("<!-- sqa: AAAAA, BBBBB, CCCCC -->\n")
-    anchors.remove_anchor(path, "BBBBB")
+    assert anchors.remove_anchor(path, "BBBBB") is True
     txt = path.read_text()
     assert "AAAAA" in txt
     assert "BBBBB" not in txt
@@ -131,3 +130,81 @@ def test_find_anchors_in_file(tmp_path):
     path = tmp_path / "x.py"
     path.write_text("# sqa: AAAAA\ndef f(): pass\n# sqa: BBBBB\n")
     assert anchors.find_anchors_in_file(path) == ["AAAAA", "BBBBB"]
+
+
+def test_find_anchors_for_orphan_scan_python_skips_strings(tmp_path):
+    path = tmp_path / "fixture.py"
+    path.write_text("# sqa: REALA\nparse_ids(\"# sqa: FAKEA\")\nx = '''\n# sqa: FAKEB\n'''\n")
+    assert anchors.find_anchors_for_orphan_scan(path) == ["REALA"]
+
+
+def test_find_anchors_for_orphan_scan_python_finds_real_alongside_fixtures(tmp_path):
+    path = tmp_path / "fixture.py"
+    path.write_text('def test():\n    s = "# sqa: FAKEA"\n    return s  # sqa: REALA\n')
+    assert anchors.find_anchors_for_orphan_scan(path) == ["REALA"]
+
+
+def test_find_anchors_for_orphan_scan_md_skips_fenced_block(tmp_path):
+    path = tmp_path / "doc.md"
+    path.write_text(
+        "Real anchor on next line:\n"
+        "<!-- sqa: REALA -->\n"
+        "\n"
+        "Example:\n"
+        "```python\n"
+        "# sqa: FAKEA\n"
+        "```\n"
+        "\n"
+        "Tilde fence:\n"
+        "~~~\n"
+        "# sqa: FAKEB\n"
+        "~~~\n"
+    )
+    assert anchors.find_anchors_for_orphan_scan(path) == ["REALA"]
+
+
+def test_find_anchors_for_orphan_scan_md_skips_inline_code(tmp_path):
+    path = tmp_path / "doc.md"
+    path.write_text("Use `# sqa: FAKEA` to anchor.\n<!-- sqa: REALA -->\n")
+    assert anchors.find_anchors_for_orphan_scan(path) == ["REALA"]
+
+
+def test_find_anchors_for_orphan_scan_other_suffix_unchanged(tmp_path):
+    # Files without .py/.md/.markdown get raw parse_ids — strings aren't stripped.
+    path = tmp_path / "data.txt"
+    path.write_text('"# sqa: SHOWN"\n# sqa: ALSOA\n')
+    assert anchors.find_anchors_for_orphan_scan(path) == ["SHOWN", "ALSOA"]
+
+
+def test_strip_python_strings_blanks_string_contents():
+    text = '# sqa: KEEP\nx = "# sqa: GONE"\n'
+    stripped = anchors._strip_python_strings(text)
+    assert "KEEP" in stripped
+    assert "GONE" not in stripped
+
+
+def test_strip_python_strings_invalid_python_returns_input():
+    bad = "def (\n# sqa: KEEP\n"
+    assert anchors._strip_python_strings(bad) == bad
+
+
+def test_strip_python_strings_blanks_fstring_literal_segments():
+    text = '# sqa: KEEP\nx = f"# sqa: GONEX, {value}"\n'
+    stripped = anchors._strip_python_strings(text)
+    assert "KEEP" in stripped
+    assert "GONEX" not in stripped
+
+
+def test_strip_markdown_code_blocks_handles_both_fences():
+    text = "before\n```\n# sqa: GONEA\n```\nbetween\n~~~\n# sqa: GONEB\n~~~\n<!-- sqa: KEEP -->\n"
+    stripped = anchors._strip_markdown_code_blocks(text)
+    assert "GONEA" not in stripped
+    assert "GONEB" not in stripped
+    assert "KEEP" in stripped
+
+
+def test_strip_markdown_inline_code_blanks_backtick_spans():
+    text = "Use `# sqa: GONE` here. <!-- sqa: KEEP -->\n"
+    stripped = anchors._strip_markdown_inline_code(text)
+    assert "GONE" not in stripped
+    assert "KEEP" in stripped

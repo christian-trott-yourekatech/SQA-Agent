@@ -103,10 +103,6 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("id")
     rs.add_argument("--rationale", required=True)
 
-    ro = sub.add_parser("reopen", help="Mark a resolved finding open again")
-    ro.add_argument("id")
-    ro.add_argument("--rationale", required=True)
-
     ds = sub.add_parser(
         "diff-since-review", help="Print git diff of a file vs its last-reviewed blob"
     )
@@ -120,7 +116,9 @@ def build_parser() -> argparse.ArgumentParser:
     gc_ = sub.add_parser("gc", help="Prune resolved findings older than a duration window")
     gc_.add_argument(
         "--older-than",
-        help="Only delete resolved findings whose JSON mtime is older than this (e.g. 30d).",
+        required=True,
+        help="Delete resolved findings whose JSON mtime is older than this (e.g. 30d). "
+        "Pass '0s' to delete every resolved finding.",
     )
 
     return p
@@ -132,10 +130,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         # init creates the project, doesn't require existing state, but does
-        # require a sensible cwd (a git repo, since reviews depend on git).
+        # require a sensible cwd (a git repo with at least one commit, since
+        # the reviewer's change-detection relies on `git ls-files` and blob
+        # hashing — neither produces useful output before the first commit).
         cwd = Path.cwd()
         if not git_ops.is_repo(cwd):
-            print("error: sqa-tool requires a git repository.", file=sys.stderr)
+            print(
+                "error: sqa-tool requires a git repository. Run `git init` first, "
+                "stage and commit your initial files, then try again.",
+                file=sys.stderr,
+            )
+            return 1
+        if not git_ops.has_commits(cwd):
+            print(
+                "error: this git repository has no commits yet. The reviewer needs "
+                "at least one commit because change detection works against tracked "
+                "files. Run `git add .` and `git commit -m 'initial'`, then try again.",
+                file=sys.stderr,
+            )
             return 1
         return init.run(cwd)
 
@@ -152,15 +164,11 @@ def main(argv: list[str] | None = None) -> int:
         "findings-for-file": lambda: findings_for_file.run(project_root, args),
         "triage": lambda: triage.triage(project_root, args),
         "resolve": lambda: triage.resolve(project_root, args),
-        "reopen": lambda: triage.reopen(project_root, args),
         "diff-since-review": lambda: diff_since_review.run(project_root, args),
         "orphans": lambda: orphans.run(project_root, args),
         "gc": lambda: gc.run(project_root, args),
     }
-    handler = dispatch.get(args.command)
-    if handler is None:
-        parser.error(f"unknown command: {args.command}")
-    return handler()
+    return dispatch[args.command]()
 
 
 if __name__ == "__main__":

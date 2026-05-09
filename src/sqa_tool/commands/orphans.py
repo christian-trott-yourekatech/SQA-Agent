@@ -2,27 +2,22 @@
 
 import argparse
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
 from sqa_tool import anchors, findings, git_ops, paths
 
 
-def _walk_anchorable_files(project_root: Path) -> Iterator[tuple[str, Path]]:
-    """Yield (rel_path, abs_path) for every git-tracked file that may carry anchors."""
-    for rel in git_ops.ls_files(project_root):
-        abs_path = project_root / rel
-        if not abs_path.is_file():
-            continue
-        yield rel, abs_path
-
-
 def _collect_anchored_ids(project_root: Path) -> dict[str, list[str]]:
-    """Build a map: finding_id → list of rel_paths in which it's anchored."""
+    """Build a map: finding_id → list of rel_paths in which it's anchored.
+
+    Skips anchors that appear inside Python string literals or markdown
+    fenced code blocks — those are test fixtures and documentation
+    examples, not real anchors.
+    """
     out: dict[str, list[str]] = {}
-    for rel, abs_path in _walk_anchorable_files(project_root):
+    for rel, abs_path in git_ops.walk_tracked_files(project_root):
         try:
-            ids = anchors.find_anchors_in_file(abs_path)
+            ids = anchors.find_anchors_for_orphan_scan(abs_path)
         except (UnicodeDecodeError, OSError):
             continue
         for fid in ids:
@@ -37,11 +32,11 @@ def _is_scope_md(rel: str) -> bool:
 def _delete_empty_scope_md_files(project_root: Path) -> list[str]:
     """Auto-fix: delete .sqa.md files that contain no anchors. Returns deleted rel-paths."""
     deleted = []
-    for rel, abs_path in _walk_anchorable_files(project_root):
+    for rel, abs_path in git_ops.walk_tracked_files(project_root):
         if not _is_scope_md(rel):
             continue
         try:
-            ids = anchors.find_anchors_in_file(abs_path)
+            ids = anchors.find_anchors_for_orphan_scan(abs_path)
         except (UnicodeDecodeError, OSError):
             continue
         if not ids:
@@ -76,12 +71,27 @@ def _add_missing_related_for_source_anchors(
 
 
 def _report(project_root: Path, anchored: dict[str, list[str]]) -> dict[str, list]:
-    """Compute the non-auto-fixable orphan classes."""
-    json_ids = set(findings.list_finding_ids(project_root))
+    """Compute the non-auto-fixable orphan classes.
+
+    Resolved findings are excluded from `findings_without_anchors`: by design,
+    `resolve` strips the anchor while keeping the JSON file (until `gc`), so
+    "resolved + no anchor" is the expected terminal state, not an orphan.
+    """
+    all_ids = findings.list_finding_ids(project_root)
+    open_ids: set[str] = set()
+    for fid in all_ids:
+        try:
+            f = findings.load_finding(project_root, fid)
+        except (FileNotFoundError, ValueError):
+            continue
+        if f.status != "resolved":
+            open_ids.add(fid)
+
     anchor_ids = set(anchored.keys())
 
-    findings_without_anchors = sorted(json_ids - anchor_ids)
+    findings_without_anchors = sorted(open_ids - anchor_ids)
     anchors_without_findings: list[dict] = []
+    json_ids = set(all_ids)
     for fid in sorted(anchor_ids - json_ids):
         anchors_without_findings.append({"id": fid, "in_files": anchored[fid]})
 

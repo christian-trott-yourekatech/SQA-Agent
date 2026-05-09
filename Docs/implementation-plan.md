@@ -34,7 +34,7 @@ Reviewer2/
 │           ├── needs_review.py
 │           ├── mark_reviewed.py
 │           ├── record_finding.py
-│           ├── triage.py           # triage, resolve, reopen
+│           ├── triage.py           # triage, resolve
 │           ├── show.py             # show-finding, list-findings, status
 │           ├── findings_for_file.py
 │           ├── orphans.py
@@ -91,10 +91,10 @@ Each milestone ends with green tests and a usable increment. Roughly sized; not 
 ### M3 — State transitions + status
 
 **Deliverables:**
-- `triage`, `resolve`, `reopen` (rationale-replacing).
+- `triage`, `resolve` (rationale-replacing).
 - `status` subcommand: counts and breakdowns (per directory, per severity).
 - Anchor *removal* on `resolve` (the inverse of insertion).
-- Tests: state machine (open → triaged → resolved; reopen path), rationale replacement is full-string, anchor removal is clean.
+- Tests: state machine (open → triaged → resolved), rationale replacement is full-string, anchor removal is clean.
 
 **Done means:** the full lifecycle of a finding works end-to-end via tool subcommands.
 
