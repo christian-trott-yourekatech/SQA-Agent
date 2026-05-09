@@ -26,43 +26,95 @@ def test_init_scaffolds_skills_and_agents(project: Path):
     assert (skills_dir / "sqa-review" / "SKILL.md").is_file()
     assert (skills_dir / "sqa-resolve" / "SKILL.md").is_file()
     assert (skills_dir / "sqa-status" / "SKILL.md").is_file()
-    # Subagents are flat .md files.
+    # Skills also ship project.md siblings (where applicable).
+    assert (skills_dir / "sqa-review" / "project.md").is_file()
+    assert (skills_dir / "sqa-resolve" / "project.md").is_file()
+    # Subagent framework files (flat .md).
     assert (agents_dir / "review-file.md").is_file()
     assert (agents_dir / "triage-file.md").is_file()
     assert (agents_dir / "resolve-file.md").is_file()
     assert (agents_dir / "fix-orphans.md").is_file()
+    # Subagent project files (flat .md, preserved across upgrades).
+    assert (agents_dir / "review-file-prompts.md").is_file()
+    assert (agents_dir / "triage-file-guidelines.md").is_file()
 
 
-def test_init_aborts_on_existing_skill(project: Path):
-    # Pre-create a skill directory with custom content.
+def test_init_overwrites_framework_skill_md(project: Path):
+    """Framework SKILL.md must be overwritten on re-init so users get the
+    latest workflow logic."""
     skills_dir = project / ".claude" / "skills" / "sqa-review"
     skills_dir.mkdir(parents=True)
-    custom = skills_dir / "SKILL.md"
-    custom.write_text("# my customized version\n")
-    rc = _run(project, "init", expected_exit=1)
-    assert rc == 1
-    # Custom content preserved (not overwritten).
-    assert custom.read_text() == "# my customized version\n"
-    # .sqa/ NOT created — init aborted before scaffolding any state.
-    assert not (project / ".sqa").exists()
+    skill_md = skills_dir / "SKILL.md"
+    skill_md.write_text("# stale customization\n")
+    _run(project, "init")
+    # Stale content is replaced by the bundled framework.
+    assert skill_md.read_text() != "# stale customization\n"
+    assert "framework" in skill_md.read_text().lower()
 
 
-def test_init_aborts_on_existing_agent(project: Path):
-    # Pre-create an agent file with custom content.
+def test_init_overwrites_framework_agent_md(project: Path):
+    """Framework agent <name>.md must be overwritten on re-init."""
     agents_dir = project / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
-    custom = agents_dir / "review-file.md"
-    custom.write_text("# my custom subagent\n")
-    rc = _run(project, "init", expected_exit=1)
-    assert rc == 1
-    assert custom.read_text() == "# my custom subagent\n"
-    assert not (project / ".sqa").exists()
-
-
-def test_init_refuses_overwrite(project: Path):
+    agent_md = agents_dir / "review-file.md"
+    agent_md.write_text("# stale customization\n")
     _run(project, "init")
-    rc = _run(project, "init", expected_exit=1)
-    assert rc == 1
+    assert agent_md.read_text() != "# stale customization\n"
+
+
+def test_init_preserves_skill_project_md(project: Path):
+    """Project-specific files in skill dirs (e.g., project.md) must NOT
+    be overwritten when they already exist."""
+    skills_dir = project / ".claude" / "skills" / "sqa-review"
+    skills_dir.mkdir(parents=True)
+    custom = skills_dir / "project.md"
+    custom.write_text("# my customized quality-check command\n")
+    _run(project, "init")
+    assert custom.read_text() == "# my customized quality-check command\n"
+
+
+def test_init_preserves_agent_project_files(project: Path):
+    """Project-specific agent files (e.g., review-file-prompts.md,
+    triage-file-guidelines.md) must NOT be overwritten."""
+    agents_dir = project / ".claude" / "agents"
+    agents_dir.mkdir(parents=True)
+    prompts = agents_dir / "review-file-prompts.md"
+    guidelines = agents_dir / "triage-file-guidelines.md"
+    prompts.write_text("# my customized review prompts\n")
+    guidelines.write_text("# my customized triage guidelines\n")
+    _run(project, "init")
+    assert prompts.read_text() == "# my customized review prompts\n"
+    assert guidelines.read_text() == "# my customized triage guidelines\n"
+
+
+def test_init_creates_missing_project_files(project: Path):
+    """When a project file doesn't exist, init creates it from the bundled
+    default."""
+    _run(project, "init")
+    project_md = project / ".claude" / "skills" / "sqa-review" / "project.md"
+    assert project_md.is_file()
+    # Default content should reference quality-check.
+    assert "Quality-check command" in project_md.read_text()
+
+
+def test_init_is_idempotent_on_re_run(project: Path):
+    """Re-running init succeeds: framework gets refreshed, project files
+    preserved, .sqa/ left untouched."""
+    _run(project, "init")
+    # Customize a project file.
+    project_md = project / ".claude" / "skills" / "sqa-review" / "project.md"
+    project_md.write_text("# user edit\n")
+    # Pretend the framework drifted and re-run init.
+    skill_md = project / ".claude" / "skills" / "sqa-review" / "SKILL.md"
+    skill_md.write_text("# stale\n")
+    rc = _run(project, "init")
+    assert rc == 0
+    # Framework refreshed.
+    assert skill_md.read_text() != "# stale\n"
+    # Project file preserved.
+    assert project_md.read_text() == "# user edit\n"
+    # State preserved.
+    assert (project / ".sqa" / "config.toml").exists()
 
 
 def test_init_refuses_non_git(tmp_path: Path, capsys):

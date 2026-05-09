@@ -213,13 +213,43 @@ These are deferred — the simple "all in or all out, your call" default is enou
 
 Three skills, each owning one user-visible verb. Composable; user-invokable independently. The `sqa-` prefix avoids collision with Claude Code's built-in `/review` slash command.
 
-**Installation model:** skills and subagents are installed per-project, scaffolded by `sqa-tool init` into the project's harness directories:
-- Skills go to `.claude/skills/<name>/SKILL.md` — directory-per-skill is the Claude Code convention for user-invokable skills.
-- Subagents go to `.claude/agents/<name>.md` — flat files.
+**Installation model:** skills and subagents are installed per-project, scaffolded by `sqa-tool init` into the project's harness directories. Each skill or subagent that has project-customizable content is split into two files:
 
-Per-project install lets each project customize the skill markdown directly — review prompts, the project-local quality-check command, and any other project-specific guidance live in the project's copy. The cost is a slight version-skew risk if the central skill bundle gains improvements after a project initializes; this is acceptable for now and revisitable.
+- A **framework file** that holds the workflow logic — what tools to call, in what order, dispatch patterns, etc.
+- A **project file** that holds project-specific configuration — quality-check command, review prompt sections, triage guidelines, project conventions.
 
-Re-running `init` does not overwrite existing skill or agent files in `.claude/`, so customizations are preserved across upgrades.
+Layout:
+
+```
+.claude/skills/
+  sqa-review/
+    SKILL.md           ← framework (overwritten by init)
+    project.md         ← project-specific (preserved by init)
+  sqa-resolve/
+    SKILL.md           ← framework
+    project.md         ← project-specific
+  sqa-status/
+    SKILL.md           ← framework only
+
+.claude/agents/
+  review-file.md              ← framework
+  review-file-prompts.md      ← project-specific (the review prompt sections)
+  triage-file.md              ← framework
+  triage-file-guidelines.md   ← project-specific (Clean Code Bias, etc.)
+  resolve-file.md             ← framework
+  fix-orphans.md              ← framework
+```
+
+The framework file references its project-file sibling at runtime. For example, `sqa-review/SKILL.md` reads `sqa-review/project.md` to determine which quality-check command to run; `review-file.md` reads `review-file-prompts.md` to get the per-file review sections to walk.
+
+**Init's overwrite policy:**
+
+- **Framework files** (`SKILL.md`, the named agents `review-file.md` / `triage-file.md` / `resolve-file.md` / `fix-orphans.md`): always overwritten. This lets users get the latest workflow logic when they re-run `init` after a tool upgrade.
+- **Project files** (`project.md`, `*-prompts.md`, `*-guidelines.md`): preserved if they exist; created from defaults if they don't. The user's customizations are never blown away.
+
+Discrimination rule for agents: a file in `.claude/agents/<name>.md` is framework if `<name>` is in the canonical framework-agent set (`review-file`, `triage-file`, `resolve-file`, `fix-orphans`); anything else (`review-file-prompts.md`, `triage-file-guidelines.md`, future `*-prompts` / `*-guidelines` siblings) is project. For skills, only `SKILL.md` is framework; everything else under the skill's directory is project.
+
+This separation is the answer to a tension v2 had earlier: per-project skill installation lets each project customize behavior, but tool upgrades couldn't easily refresh the framework without clobbering customizations. Splitting framework and project content removes that tradeoff — `init` becomes idempotent for upgrades.
 
 #### `sqa-review` skill
 
@@ -262,10 +292,10 @@ Conversational wrapper around `sqa-tool status`. Reports counts (new, untriaged,
 
 ### 5.2 Subagents
 
-Defined formally as markdown in the project's harness `agents/` directory (scaffolded by `init`). Each is a one-shot agent invoked by name from the user-facing skills. Subagent markdown carries the prompt content directly — including the review-prompt sections that the `review-file` subagent walks. With the exception of `fix-orphans`, all are scoped to a single file so context-building costs are amortized across the work for that file.
+Defined formally as markdown in the project's harness `agents/` directory (scaffolded by `init`). Each is a one-shot agent invoked by name from the user-facing skills. Subagents whose behavior depends on project-customizable content (review prompts, triage guidelines) are split into a framework file and a project-file sibling — see the Installation model in [§ 5.1](#51-user-facing-skills) for details. The framework file reads the project file at runtime. With the exception of `fix-orphans`, all are scoped to a single file so context-building costs are amortized across the work for that file.
 
-- **`review-file`** — given a file path, performs a full review. Calls `findings-for-file` to load prior context, reads the file, walks the review-prompt sections embedded in its own markdown, records new findings, refreshes/resolves prior findings as warranted, and calls `mark-reviewed` on completion. Biases toward conservative judgment ("if uncertain about staleness, keep the finding open"). Also biases toward narrow scope: anchor findings at file scope unless they're genuinely cross-cutting (not addressable by editing one file). This avoids flooding project `.sqa.md` with concerns that really belong with one file, and reduces lock contention on shared `.sqa.md` files.
-- **`triage-file`** — given a file path, autonomously classifies all untriaged findings anchored in that file (or its `.sqa.md`) as `auto` / `interactive` / `ignore`. Embeds detailed criteria (Clean Code Bias, pre-interactive checklist, common traps that look interactive but are usually auto) — see the subagent markdown for the full taxonomy. Routes ambiguous or judgment-heavy findings to `interactive` rather than guessing. The bar for `ignore` is "specific reason not to fix" — *not* "this is minor"; small fixes default to `auto`. Persistent findings with rationale replace v1's "add a code comment to prevent re-flagging" pattern: the ignore-with-rationale itself is the durable annotation.
+- **`review-file`** — given a file path, performs a full review. Calls `findings-for-file` to load prior context, reads the file, reads `review-file-prompts.md` to get the per-file review sections, walks them looking for new findings, refreshes/resolves prior findings as warranted, and calls `mark-reviewed` on completion. Biases toward conservative judgment ("if uncertain about staleness, keep the finding open"). Also biases toward narrow scope: anchor findings at file scope unless they're genuinely cross-cutting (not addressable by editing one file). This avoids flooding project `.sqa.md` with concerns that really belong with one file, and reduces lock contention on shared `.sqa.md` files.
+- **`triage-file`** — given a file path, autonomously classifies all untriaged findings anchored in that file (or its `.sqa.md`) as `auto` / `interactive` / `ignore`. Reads `triage-file-guidelines.md` (project-customizable) for the criteria, which includes Clean Code Bias, the pre-interactive checklist, and common traps that look interactive but are usually auto. Routes ambiguous or judgment-heavy findings to `interactive` rather than guessing. The bar for `ignore` is "specific reason not to fix" — *not* "this is minor"; small fixes default to `auto`. Persistent findings with rationale replace v1's "add a code comment to prevent re-flagging" pattern: the ignore-with-rationale itself is the durable annotation.
 - **`resolve-file`** — given a file path, applies fixes for every auto-class finding anchored in that file. Reads the file once; resolves all relevant findings; calls `sqa-tool resolve` per finding. Used only by `resolve auto`.
 - **`fix-orphans`** — handles the orphan classes the tool can't fix deterministically (anchors with no JSON, JSONs with no anchors, `related_files` referencing nonexistent paths). One-shot, no per-file scope; orphans are usually few.
 
@@ -351,17 +381,22 @@ sqa-tool init
     relies on git-tracked files; both cases produce an actionable
     error message pointing at git init / git commit).
 
-    Creates .sqa/ with default config.toml, empty findings/ dir, and
-    empty file_status.json. Scaffolds the project's harness skill and
-    agent directories under .claude/skills/<name>/SKILL.md (directory-
-    per-skill) and .claude/agents/<name>.md (flat). The bundled skills
-    are sqa-review / sqa-resolve / sqa-status; the bundled subagents
-    are review-file / triage-file / resolve-file / fix-orphans (each
-    carrying its own prompt content inline). Pre-existing files at
-    those paths are NOT overwritten — user customizations are
-    preserved across upgrades. Logs an informational message about
-    whether to gitignore .sqa/findings/ for security-sensitive
-    projects (see § 4.6).
+    On first run, creates .sqa/ with default config.toml, empty
+    findings/ dir, and empty file_status.json. On re-run, leaves
+    existing .sqa/ state alone.
+
+    Always (re-)installs the framework files into .claude/skills/ and
+    .claude/agents/, overwriting prior versions so the user picks up
+    the latest workflow logic. Project-specific files (project.md,
+    *-prompts.md, *-guidelines.md) are preserved if they already
+    exist; created from defaults if they don't. Init reports which
+    files were installed, overwritten, and preserved.
+
+    See § 5.1 Installation model for the full layout and the
+    framework/project distinction.
+
+    Logs an informational message about whether to gitignore
+    .sqa/findings/ for security-sensitive projects (see § 4.6).
 
 sqa-tool needs-review [--count] [--limit N]
     List files (from configured includes/excludes ∩ git-tracked files)

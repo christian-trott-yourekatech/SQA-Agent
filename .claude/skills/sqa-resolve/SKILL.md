@@ -4,9 +4,15 @@ description: Triage untriaged findings, then resolve findings in the requested c
 argument-hint: auto|interactive
 ---
 
-# sqa-resolve
+# sqa-resolve (framework)
 
 You are running the resolve flow using `sqa-tool` and per-file subagents.
+
+> **Framework file.** This file is overwritten by `sqa-tool init` on
+> upgrade. Project-specific configuration (quality-check command,
+> conventions) lives in `.claude/skills/sqa-resolve/project.md` and is
+> preserved across upgrades. **Do not edit this framework file** for
+> project-specific settings — edit `project.md` instead.
 
 ## Required argument
 
@@ -14,11 +20,11 @@ The user invokes you as `sqa-resolve auto` or `sqa-resolve interactive`. If the 
 
 ## Phase 0 — Pre-resolve baseline check
 
-Before any triage or resolution work, run the project's quality-check command **once** to establish a clean baseline. Per-finding regression checks during the resolve phase only have value if the project starts green — otherwise pre-existing failures get conflated with regressions.
+Before any triage or resolution work:
 
-*Project-specific check command (edit this line for your project):* `./runtools.sh`
-
-If the check fails at baseline, **stop and surface the failures to the user.** Do not proceed to Phase 1 until the project is green. Either fix the failures directly, or have the user fix them in a separate session, before re-invoking `sqa-resolve`. The triage and resolve phases assume a clean starting state.
+1. Read `.claude/skills/sqa-resolve/project.md`. Extract the quality-check command from its "Quality-check command" section. Note any project-specific conventions for use later.
+2. Run that command via Bash **once** to establish a clean baseline. Per-finding regression checks during the resolve phase only have value if the project starts green — otherwise pre-existing failures get conflated with regressions.
+3. If the check fails at baseline, **stop and surface the failures to the user.** Do not proceed to Phase 1 until the project is green. Either fix the failures directly, or have the user fix them in a separate session, before re-invoking `sqa-resolve`. The triage and resolve phases assume a clean starting state.
 
 ## Phase 1 — Autonomous triage
 
@@ -41,7 +47,7 @@ This phase runs in both modes. Triage is autonomous, not user-interactive — it
 3. **Resolve files one at a time, sequentially, with per-finding quality checks.** For each file in the group:
    - Spawn one `resolve-file` subagent. Wait for it to complete before starting the next.
    - **Do not parallelize this step.** Auto-resolve is the one phase that writes substantively to source code, and many real fixes span files (DRY extractions, renames, SSOT consolidations, following established patterns). Parallel `resolve-file` subagents can race on cross-file edits, produce semantic conflicts, or drift the very pattern they're meant to follow. Serial dispatch preserves correctness.
-   - **After each subagent completes, run the project quality-check command** (defined in Phase 0). If it fails, **fix the regressions before moving on** — either directly via Edit, or by spawning another short-scoped subagent to address them. Do *not* proceed to the next file with a known-failing check; regressions accumulate and become hard to attribute.
+   - **After each subagent completes, run the project quality-check command** (the same one from Phase 0). If it fails, **fix the regressions before moving on** — either directly via Edit, or by spawning another short-scoped subagent to address them. Do *not* proceed to the next file with a known-failing check; regressions accumulate and become hard to attribute.
 4. After the loop ends, run `sqa-tool status` and report. Optionally run the quality-check one more time as a final sanity check.
 
 ### Mode: `interactive`
@@ -58,11 +64,11 @@ This phase runs in both modes. Triage is autonomous, not user-interactive — it
      - **Re-classify** — "this is actually auto," "ignore this one," "this isn't really an issue." Use `sqa-tool triage <id> auto|ignore --rationale="..."` to bump the finding into a different bucket. (For ignore, capture *why* in the rationale per the triage guidance.)
      - **Ask a clarifying question** — answer it; don't assume the answer means "fix it."
    - Don't expect exact phrasing. Use judgment to interpret what the user wants. If genuinely unclear, ask.
-   - **After every fix that lands, run the project quality-check command** (defined in Phase 0). If it fails, **fix the regressions before moving on to the next finding** — work it through with the user the same way you'd work the original finding. Do not advance to the next finding with a known-failing check; the user benefits from clean attribution between each fix and any breakage it causes.
+   - **After every fix that lands, run the project quality-check command** (the same one from Phase 0). If it fails, **fix the regressions before moving on to the next finding** — work it through with the user the same way you'd work the original finding. Do not advance to the next finding with a known-failing check; the user benefits from clean attribution between each fix and any breakage it causes.
 3. After the loop ends (or the user stops it), run `sqa-tool status` and report. Optionally run the quality-check one final time as a sanity check.
 
 ## Notes
 
 - All state changes go through `sqa-tool` — never edit `.sqa/findings/*.json` or `.sqa/file_status.json` directly.
-- For `resolve auto`, the `resolve-file` subagent applies fixes in source files via Edit and calls `sqa-tool resolve <id>` per finding (which strips the anchor).
+- For `resolve auto`, the `resolve-file` subagent applies fixes in source files via Edit and calls `sqa-tool resolve <id>` per finding (which strips the anchor and deletes the JSON).
 - If safety cap (50 batches) is hit, suggest the user re-invoke or wrap with `/loop /sqa-resolve auto`.
