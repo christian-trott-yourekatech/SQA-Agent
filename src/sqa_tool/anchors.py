@@ -68,22 +68,15 @@ def is_commentable(path: Path) -> bool:
     ext = _ext(path)
     if ext in _UNCOMMENTABLE_EXTS:
         return False
-    return ext in _LINE_PREFIX or ext in _BLOCK_DELIMS or path.name == ".sqa.md"
+    return ext in _LINE_PREFIX or ext in _BLOCK_DELIMS
 
 
 def comment_for(path: Path, body: str) -> str:
-    """Format `body` as a comment appropriate for the file's language.
-
-    `.sqa.md` is treated as markdown (block-style)."""
-    if path.name == ".sqa.md":
-        return f"<!-- {body} -->"
-    ext = _ext(path)
-    if ext in _LINE_PREFIX:
-        return f"{_LINE_PREFIX[ext]} {body}"
-    if ext in _BLOCK_DELIMS:
-        open_, close_ = _BLOCK_DELIMS[ext]
-        return f"{open_} {body} {close_}"
-    raise ValueError(f"Don't know how to format a comment for {path}")
+    """Format `body` as a comment appropriate for the file's language."""
+    opener, closer = _comment_style(path)
+    if closer is None:
+        return f"{opener} {body}"
+    return f"{opener} {body} {closer}"
 
 
 # Match `sqa: <id>` or `sqa: <id>, <id>, ...` in any comment style.
@@ -169,8 +162,6 @@ def _comment_style(path: Path) -> tuple[str, str | None]:
     a string for block-style comments (HTML/CSS).
     Raises ValueError if the file extension isn't a known commentable type.
     """
-    if path.name == ".sqa.md":
-        return ("<!--", "-->")
     ext = _ext(path)
     if ext in _LINE_PREFIX:
         return (_LINE_PREFIX[ext], None)
@@ -216,7 +207,9 @@ def _comment_extent(
         cl_pos = line.find(cl, anchor_start)
         if op_pos != -1 and cl_pos != -1:
             return (op_pos, cl_pos + len(cl))
-    for prefix in ("//", "--", "#"):
+    # Sort by length descending so longer markers win when one prefix is a
+    # substring of another (e.g. a hypothetical `///` ahead of `//`).
+    for prefix in sorted(set(_LINE_PREFIX.values()), key=len, reverse=True):
         op_pos = line.rfind(prefix, 0, anchor_start)
         if op_pos != -1:
             return (op_pos, line_end)

@@ -18,6 +18,7 @@ def _git(project_root: Path, *args: str, input_text: str | None = None) -> str:
             input=input_text,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
     except FileNotFoundError as e:

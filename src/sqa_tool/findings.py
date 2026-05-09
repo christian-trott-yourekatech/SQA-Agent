@@ -80,8 +80,17 @@ def load_finding(project_root: Path, finding_id: str) -> Finding:
     path = paths.finding_path(project_root, finding_id)
     if not path.exists():
         raise FileNotFoundError(f"No finding with ID {finding_id}")
-    data = json.loads(path.read_text())
-    return _finding_from_dict(data)
+    raw = path.read_text()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Corrupted finding {finding_id} at {path}: invalid JSON ({e})") from e
+    try:
+        return _finding_from_dict(data)
+    except KeyError as e:
+        raise ValueError(
+            f"Corrupted finding {finding_id} at {path}: missing required field {e}"
+        ) from e
 
 
 def _finding_from_dict(data: dict) -> Finding:

@@ -114,7 +114,7 @@ def test_record_finding_with_anchor_in_sqa_md(initialized: Path, capsys):
     assert f"sqa: {fid}" in md
 
 
-def test_record_finding_anchor_uncommentable_fails(initialized: Path, capsys):
+def test_record_finding_anchor_uncommentable_fails(initialized: Path):
     (initialized / "data.json").write_text("{}")
     rc = _run(
         initialized,

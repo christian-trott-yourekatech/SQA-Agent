@@ -33,7 +33,7 @@ def _candidate_files(project_root: Path) -> list[str]:
     return sorted(included - excluded)
 
 
-def _changed_files(project_root: Path) -> list[str]:
+def changed_files(project_root: Path) -> list[str]:
     candidates = _candidate_files(project_root)
     if not candidates:
         return []
@@ -50,7 +50,7 @@ def _changed_files(project_root: Path) -> list[str]:
 
 
 def run(project_root: Path, args: argparse.Namespace) -> int:
-    changed = _changed_files(project_root)
+    changed = changed_files(project_root)
     if args.count:
         print(len(changed))
         return 0

@@ -43,9 +43,7 @@ def load(project_root: Path) -> dict[str, str]:
 
 
 def _parse_status(raw: str, path: Path) -> dict[str, str]:
-    """Parse the locked file's contents, treating empty as {} but raising on malformed JSON."""
-    if not raw.strip():
-        return {}
+    """Parse the locked file's contents, raising on malformed JSON."""
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:

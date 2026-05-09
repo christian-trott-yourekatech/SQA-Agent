@@ -10,7 +10,7 @@ def _find_files_with_anchor(project_root: Path, finding_id: str) -> list[Path]:
     out = []
     for _rel, path in git_ops.walk_tracked_files(project_root):
         try:
-            ids = anchors.find_anchors_in_file(path)
+            ids = anchors.find_anchors_for_orphan_scan(path)
         except (UnicodeDecodeError, OSError):
             continue
         if finding_id in ids:

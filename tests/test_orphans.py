@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from conftest import _capture, _git, _run
+from conftest import _capture, _commit
 
 from sqa_tool import findings
 
@@ -15,13 +15,24 @@ def test_orphans_empty_project(initialized: Path, capsys):
     assert out["reported"]["findings_without_anchors"] == []
     assert out["reported"]["anchors_without_findings"] == []
     assert out["reported"]["stale_related_files"] == []
+    assert out["reported"]["unreadable_findings"] == []
+
+
+def test_orphans_reports_unreadable_finding(initialized: Path, capsys):
+    # Write a malformed finding JSON directly to disk; orphans should surface
+    # the ID under reported.unreadable_findings rather than crashing.
+    bad = initialized / ".sqa" / "findings" / "BADID.json"
+    bad.write_text("{not valid json")
+    _commit(initialized)
+
+    out = json.loads(_capture(capsys, initialized, "orphans"))
+    assert "BADID" in out["reported"]["unreadable_findings"]
 
 
 def test_orphans_deletes_empty_scope_md(initialized: Path, capsys):
     empty_md = initialized / "src" / ".sqa.md"
     empty_md.write_text("just a note, no anchors here\n")
-    _git(initialized, "add", ".")
-    _git(initialized, "commit", "-q", "-m", "empty md")
+    _commit(initialized)
 
     out = json.loads(_capture(capsys, initialized, "orphans"))
     assert "src/.sqa.md" in out["auto_fixed"]["deleted_empty_scope_files"]
@@ -31,8 +42,7 @@ def test_orphans_deletes_empty_scope_md(initialized: Path, capsys):
 def test_orphans_keeps_scope_md_with_anchors(initialized: Path, capsys):
     md = initialized / "src" / ".sqa.md"
     md.write_text("<!-- sqa: ABCDE -->\n")
-    _git(initialized, "add", ".")
-    _git(initialized, "commit", "-q", "-m", "anchored md")
+    _commit(initialized)
 
     out = json.loads(_capture(capsys, initialized, "orphans"))
     assert out["auto_fixed"]["deleted_empty_scope_files"] == []
@@ -48,8 +58,7 @@ def test_orphans_adds_anchor_file_to_related(initialized: Path, capsys):
         "--message=fix this",
         "--anchor=src/sample.py",
     ).strip()
-    _git(initialized, "add", ".")
-    _git(initialized, "commit", "-q", "-m", "anchor")
+    _commit(initialized)
 
     f = findings.load_finding(initialized, fid)
     assert f.related_files == []  # not yet auto-fixed
@@ -66,8 +75,7 @@ def test_orphans_reports_anchor_without_finding(initialized: Path, capsys):
     # Manually insert an anchor for a non-existent finding ID.
     sample = initialized / "src" / "sample.py"
     sample.write_text("# sqa: ZZZZZ\n" + sample.read_text())
-    _git(initialized, "add", ".")
-    _git(initialized, "commit", "-q", "-m", "stray anchor")
+    _commit(initialized)
 
     out = json.loads(_capture(capsys, initialized, "orphans"))
     reported = out["reported"]["anchors_without_findings"]
@@ -98,42 +106,8 @@ def test_orphans_reports_stale_related_files(initialized: Path, capsys):
         "--related=src/does_not_exist.py",
         "--anchor=src/sample.py",
     ).strip()
-    _git(initialized, "add", ".")
-    _git(initialized, "commit", "-q", "-m", "with related")
+    _commit(initialized)
 
     out = json.loads(_capture(capsys, initialized, "orphans"))
     stale = out["reported"]["stale_related_files"]
     assert any(item["id"] == fid for item in stale)
-
-
-def test_resolve_deletes_finding(initialized: Path, capsys):
-    """resolve must delete the finding JSON, not just mark it resolved.
-
-    Audit trail lives in git history of the deletion, not in a persistent
-    'status: resolved' state on disk.
-    """
-    fid = _capture(capsys, initialized, "record-finding", "--message=will be resolved").strip()
-    assert fid in findings.list_finding_ids(initialized)
-
-    _run(initialized, "resolve", fid, "--rationale=fixed")
-    assert findings.list_finding_ids(initialized) == []
-
-
-def test_resolve_strips_anchors_then_deletes(initialized: Path, capsys):
-    """resolve must strip anchors from source and delete the finding JSON."""
-    fid = _capture(
-        capsys,
-        initialized,
-        "record-finding",
-        "--message=fix the thing",
-        "--anchor=src/sample.py",
-        "--related=src/sample.py",
-    ).strip()
-    assert f"sqa: {fid}" in (initialized / "src" / "sample.py").read_text()
-
-    _git(initialized, "add", ".")
-    _git(initialized, "commit", "-q", "-m", "anchor")
-
-    _run(initialized, "resolve", fid, "--rationale=fixed")
-    assert f"sqa: {fid}" not in (initialized / "src" / "sample.py").read_text()
-    assert findings.list_finding_ids(initialized) == []

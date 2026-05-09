@@ -13,6 +13,12 @@ def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
+def _commit(project: Path, msg: str = "x") -> None:
+    """Stage everything and create a commit. Throwaway-message convenience for tests."""
+    _git(project, "add", ".")
+    _git(project, "commit", "-q", "-m", msg)
+
+
 def _run(project: Path, *argv: str, expected_exit: int = 0) -> int:
     cwd = Path.cwd()
     os.chdir(project)
@@ -40,8 +46,7 @@ def project(tmp_path: Path) -> Path:
     (tmp_path / "src").mkdir()
     sample = tmp_path / "src" / "sample.py"
     sample.write_text("def hello():\n    return 'world'\n")
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-q", "-m", "initial")
+    _commit(tmp_path, "initial")
     return tmp_path
 
 

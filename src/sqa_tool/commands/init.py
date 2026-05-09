@@ -53,16 +53,7 @@ def _bundled_claude_entries(
     return entries
 
 
-def _planned_claude_targets(project_root: Path) -> list[Path]:
-    """Return the absolute target paths `_scaffold_claude_dirs` would create.
-
-    Used by the pre-flight conflict check in `run()` so existing entries
-    abort the whole init rather than getting silently skipped.
-    """
-    return [dst for _src, dst, _kind in _bundled_claude_entries(project_root)]
-
-
-def _scaffold_claude_dirs(project_root: Path) -> list[str]:
+def _scaffold_claude_dirs(project_root: Path, entries: list[tuple[Path, Path, str]]) -> list[str]:
     """Copy bundled skills/agents into project's .claude/ directory.
 
     Layouts:
@@ -70,13 +61,13 @@ def _scaffold_claude_dirs(project_root: Path) -> list[str]:
         directory is copied as `.claude/skills/<name>/`.
       - Agents: flat `<name>.md` files copied directly.
 
-    Caller is responsible for ensuring no targets pre-exist (see
-    `_planned_claude_targets` and the conflict check in `run()`).
+    Caller is responsible for ensuring no targets pre-exist (see the
+    conflict check in `run()`).
 
     Returns project-relative paths of installed entries.
     """
     installed: list[str] = []
-    for src, dst, kind in _bundled_claude_entries(project_root):
+    for src, dst, kind in entries:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if kind == "skill":
             shutil.copytree(src, dst)
@@ -92,15 +83,17 @@ def run(project_root: Path) -> int:
         print(f"error: {sqa} already exists; refusing to overwrite", flush=True)
         return 1
 
+    # Resolve bundled entries once; a single failure point produces a single warning.
+    try:
+        entries = _bundled_claude_entries(project_root)
+    except FileNotFoundError as e:
+        print(f"warning: skill/agent scaffolding skipped — {e}", flush=True)
+        entries = []
+
     # Pre-flight: refuse if any planned skill/agent target already exists.
     # All-or-nothing: silent skipping leads to confusing partial state
     # (some bundled, some user-customized, no obvious indication).
-    try:
-        planned = _planned_claude_targets(project_root)
-    except FileNotFoundError as e:
-        print(f"warning: skill/agent scaffolding skipped — {e}", flush=True)
-        planned = []
-    conflicts = [p for p in planned if p.exists()]
+    conflicts = [dst for _src, dst, _kind in entries if dst.exists()]
     if conflicts:
         print(
             "error: refusing to overwrite existing skill/agent entries under .claude/:",
@@ -123,11 +116,7 @@ def run(project_root: Path) -> int:
 
     print(f"Initialized {sqa.relative_to(project_root)}/", flush=True)
 
-    try:
-        installed = _scaffold_claude_dirs(project_root)
-    except FileNotFoundError as e:
-        print(f"warning: skill/agent scaffolding skipped — {e}", flush=True)
-        installed = []
+    installed = _scaffold_claude_dirs(project_root, entries)
 
     if installed:
         print(f"Installed {len(installed)} skill/agent entry(s) under .claude/:", flush=True)

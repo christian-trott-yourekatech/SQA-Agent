@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from sqa_tool import findings
+from sqa_tool.commands.needs_review import changed_files
 
 
 def show(project_root: Path, args: argparse.Namespace) -> int:
@@ -78,13 +79,9 @@ def status(project_root: Path, args: argparse.Namespace) -> int:
         by_severity[f.severity] += 1
         by_status[f.status] += 1
 
-    # Compute files-needing-review count. Lazy import to avoid a circular
-    # ordering at module load time.
-    from sqa_tool.commands import needs_review as _nr
-
     needs_review_count: int | None
     try:
-        needs_review_count = len(_nr._changed_files(project_root))
+        needs_review_count = len(changed_files(project_root))
     except Exception as e:
         # If config is missing or git ops fail, surface as null rather than
         # blowing up the whole status output.
