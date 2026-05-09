@@ -1,0 +1,5 @@
+# sqa-tool project configuration.
+
+[files]
+include = ["src/**/*.py", "tests/**/*.py"]
+exclude = []
