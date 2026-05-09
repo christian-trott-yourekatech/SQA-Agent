@@ -1,8 +1,6 @@
 """sqa-tool record-finding — allocate a fresh ID and write the finding JSON."""
 
 import argparse
-import fcntl
-import os
 from pathlib import Path
 
 from sqa_tool import anchors, findings
@@ -37,24 +35,14 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
             )
             findings.delete_finding(project_root, finding_id)
             return 1
-        # Lock-protected insert (sibling subagents may target the same .sqa.md).
-        # If anything goes wrong, roll back the finding JSON so we don't leave
-        # an orphan in .sqa/findings.
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
-            target.touch()
-        fd = os.open(target, os.O_RDWR)
+        # `insert_anchor` takes its own flock; if any I/O fails, roll back the
+        # finding JSON so we don't leave an orphan in .sqa/findings.
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            try:
-                anchors.insert_anchor(target, finding_id)
-            except Exception as e:
-                findings.delete_finding(project_root, finding_id)
-                print(f"error: failed to insert anchor into {args.anchor}: {e}", flush=True)
-                return 1
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+            anchors.insert_anchor(target, finding_id)
+        except Exception as e:
+            findings.delete_finding(project_root, finding_id)
+            print(f"error: failed to insert anchor into {args.anchor}: {e}", flush=True)
+            return 1
 
     print(finding_id)
     return 0

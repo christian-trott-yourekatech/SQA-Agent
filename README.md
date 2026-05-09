@@ -14,13 +14,13 @@ See [`Docs/design.md`](./Docs/design.md) for the full design rationale.
 Requires Python 3.12+, `git`, and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/christian-trott-yourekatech/Reviewer2/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/christian-trott-yourekatech/SQA-Agent/main/install.sh | bash
 ```
 
 Or directly:
 
 ```bash
-uv tool install git+https://github.com/christian-trott-yourekatech/Reviewer2.git
+uv tool install git+https://github.com/christian-trott-yourekatech/SQA-Agent.git
 ```
 
 This installs the `sqa-tool` CLI globally. To upgrade later, re-run either command (both use `--reinstall`).
@@ -84,7 +84,6 @@ sqa-tool record-finding --message=... --severity=... [--anchor=<file>] [--relate
 sqa-tool triage <id> auto|interactive|ignore --rationale=...
 sqa-tool resolve <id> --rationale=...
 sqa-tool orphans                              # Detect/fix anchor-finding inconsistencies
-sqa-tool gc [--older-than=<duration>]         # Prune resolved findings (e.g. 30d)
 sqa-tool diff-since-review <path>             # Diff vs last-reviewed blob
 ```
 
@@ -129,8 +128,8 @@ Findings are tracked by git by default — the version-controlled audit trail is
 ## Development
 
 ```bash
-git clone https://github.com/christian-trott-yourekatech/Reviewer2
-cd Reviewer2
+git clone https://github.com/christian-trott-yourekatech/SQA-Agent
+cd SQA-Agent
 uv sync --group dev
 ./runtools.sh              # format, lint, type-check, test
 ```

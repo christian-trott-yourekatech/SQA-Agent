@@ -12,7 +12,7 @@ Companion to [`design.md`](./design.md). Plans the order of work, defines an MVP
 ## Project scaffolding
 
 ```
-Reviewer2/
+SQA-Agent/
 ├── README.md                       # short, points at design.md
 ├── LICENSE                         # MIT, same as v1
 ├── pyproject.toml                  # uv-managed, console-script entry for sqa-tool
@@ -38,7 +38,6 @@ Reviewer2/
 │           ├── show.py             # show-finding, list-findings, status
 │           ├── findings_for_file.py
 │           ├── orphans.py
-│           ├── gc.py
 │           └── diff_since_review.py
 ├── skills/                         # bundled defaults; init copies these
 │   ├── sqa-review.md
@@ -102,10 +101,9 @@ Each milestone ends with green tests and a usable increment. Roughly sized; not 
 
 **Deliverables:**
 - `orphans`: deterministic auto-fixes (empty `.sqa.md`, anchor-file missing from `related_files`); reports for the rest.
-- `gc --older-than=<duration>`: prunes resolved findings.
-- Tests: each orphan class detected/fixed correctly; gc respects the duration window and only touches `resolved`.
+- Tests: each orphan class detected/fixed correctly.
 
-**Done means:** the tool can self-maintain a `.sqa/` tree across renames, deletions, and accumulated resolved findings.
+**Done means:** the tool can self-maintain a `.sqa/` tree across renames and deletions. (`resolve` itself is responsible for cleaning up the JSON file when a finding is fixed — no separate `gc` step needed.)
 
 ### M5 — Skills + subagents
 

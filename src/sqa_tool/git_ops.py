@@ -53,6 +53,16 @@ def ls_files(project_root: Path) -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
+def git_rm(project_root: Path, rel_path: str) -> None:
+    """Remove `rel_path` from the working tree and stage the deletion.
+
+    The caller is still responsible for committing the index change; this
+    just keeps the working tree and index consistent so `git status` doesn't
+    show a tracked-but-missing file.
+    """
+    _git(project_root, "rm", "--", rel_path)
+
+
 def walk_tracked_files(project_root: Path) -> Iterator[tuple[str, Path]]:
     """Yield (rel_path, abs_path) for every git-tracked file that exists on disk.
 
@@ -80,7 +90,7 @@ def hash_object(project_root: Path, rel_paths: list[str]) -> dict[str, str]:
     stdin = "\n".join(str(project_root / p) for p in existing)
     out = _git(project_root, "hash-object", "--stdin-paths", input_text=stdin)
     hashes = out.splitlines()
-    return dict(zip(existing, hashes, strict=False))
+    return dict(zip(existing, hashes, strict=True))
 
 
 def diff_blob_to_file(project_root: Path, blob: str, rel_path: str) -> str:
@@ -95,7 +105,7 @@ def diff_blob_to_file(project_root: Path, blob: str, rel_path: str) -> str:
     if not blob and not file_exists:
         return ""
     if not blob:
-        with open(file_path) as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
         return _format_synthetic_diff(rel_path, "", content)
     if not file_exists:

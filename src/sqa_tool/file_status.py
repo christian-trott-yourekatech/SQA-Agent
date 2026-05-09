@@ -49,7 +49,7 @@ def _parse_status(raw: str, path: Path) -> dict[str, str]:
     try:
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"Corrupt file_status at {path}: {e}") from None
+        raise RuntimeError(f"Corrupt file_status at {path}: {e}") from e
 
 
 def _write_locked(fd: int, status: dict[str, str]) -> None:
@@ -68,13 +68,6 @@ def _mutate(project_root: Path, fn: Callable[[dict[str, str]], None]) -> None:
         raw = os.read(fd, os.fstat(fd).st_size).decode()
         status = _parse_status(raw, path)
         fn(status)
-        _write_locked(fd, status)
-
-
-def save(project_root: Path, status: dict[str, str]) -> None:
-    """Replace the file_status content under fcntl lock."""
-    path = paths.file_status_path(project_root)
-    with _locked(path) as fd:
         _write_locked(fd, status)
 
 

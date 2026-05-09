@@ -31,15 +31,20 @@ def triage(project_root: Path, args: argparse.Namespace) -> int:
 
 
 def resolve(project_root: Path, args: argparse.Namespace) -> int:
+    """Mark a finding resolved: strip its anchors from source and delete the JSON.
+
+    The `--rationale` argument is accepted (and echoed back as confirmation
+    output) but not persisted — under the "git is the audit trail" model, the
+    explanation for the fix lives in the user's commit message rather than in
+    a JSON field that gets deleted moments later.
+    """
     try:
-        f = findings.load_finding(project_root, args.id)
+        findings.load_finding(project_root, args.id)
     except (FileNotFoundError, ValueError) as e:
         print(f"error: {e}", flush=True)
         return 1
-    f.status = "resolved"
-    f.rationale = args.rationale
-    findings.save_finding(project_root, args.id, f)
-    # Remove anchors from any source/.sqa.md files that reference this ID.
     for path in _find_files_with_anchor(project_root, args.id):
         anchors.remove_anchor(path, args.id)
+    findings.delete_finding(project_root, args.id)
+    print(f"resolved {args.id}: {args.rationale}", flush=True)
     return 0

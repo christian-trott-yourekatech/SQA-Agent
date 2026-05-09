@@ -103,6 +103,20 @@ def test_insert_anchor_un_commentable_raises(tmp_path):
         anchors.insert_anchor(path, "ABCDE")
 
 
+def test_insert_anchor_invalid_id_raises(tmp_path):
+    # Invalid finding IDs (wrong length, bad characters, lowercase) must be
+    # rejected before any file I/O. Pin down the ValueError so this branch
+    # in insert_anchor isn't lost in a future refactor.
+    path = tmp_path / "x.py"
+    path.write_text("def f():\n    pass\n")
+    with pytest.raises(ValueError):
+        anchors.insert_anchor(path, "bad")
+    with pytest.raises(ValueError):
+        anchors.insert_anchor(path, "abcde")  # lowercase
+    with pytest.raises(ValueError):
+        anchors.insert_anchor(path, "ABCDEF")  # too long
+
+
 def test_remove_anchor_drops_line_when_only_id(tmp_path):
     path = tmp_path / ".sqa.md"
     path.write_text("<!-- sqa: AAAAA -->\nsome text\n")
@@ -126,10 +140,81 @@ def test_remove_anchor_no_match(tmp_path):
     assert anchors.remove_anchor(path, "AAAAA") is False
 
 
+def test_remove_anchor_nonexistent_path_returns_false(tmp_path):
+    # remove_anchor on a path that doesn't exist should silently return False
+    # rather than raising — covers the early-exit branch.
+    path = tmp_path / "does_not_exist.py"
+    assert anchors.remove_anchor(path, "AAAAA") is False
+    # And the file should still not exist (no side effects).
+    assert not path.exists()
+
+
+def test_remove_anchor_id_not_in_anchor_line(tmp_path):
+    # Anchor exists in the file but the requested ID isn't in any anchor —
+    # exercises the kept == ids branch (no change, returns False).
+    path = tmp_path / "x.py"
+    original = "# sqa: AAAAA\nx = 1\n"
+    path.write_text(original)
+    assert anchors.remove_anchor(path, "BBBBB") is False
+    # File contents unchanged.
+    assert path.read_text() == original
+
+
+def test_remove_anchor_preserves_code_on_inline_comment_python(tmp_path):
+    # Regression test for finding 2DD7I: removing the last ID from an inline
+    # comment must not delete the code that precedes it.
+    path = tmp_path / "x.py"
+    path.write_text("x = 1  # sqa: ABCDE\ny = 2\n")
+    assert anchors.remove_anchor(path, "ABCDE") is True
+    assert path.read_text() == "x = 1\ny = 2\n"
+
+
+def test_remove_anchor_preserves_code_on_inline_comment_js(tmp_path):
+    path = tmp_path / "x.js"
+    path.write_text("const x = 1; // sqa: ABCDE\nconst y = 2;\n")
+    assert anchors.remove_anchor(path, "ABCDE") is True
+    assert path.read_text() == "const x = 1;\nconst y = 2;\n"
+
+
+def test_remove_anchor_preserves_code_on_inline_block_comment(tmp_path):
+    path = tmp_path / "x.css"
+    path.write_text("body { color: red; } /* sqa: ABCDE */\nfoo\n")
+    assert anchors.remove_anchor(path, "ABCDE") is True
+    assert path.read_text() == "body { color: red; }\nfoo\n"
+
+
+def test_remove_anchor_preserves_other_ids_on_inline_comment(tmp_path):
+    # When other IDs remain, the comment stays — only the matching ID is removed.
+    path = tmp_path / "x.py"
+    path.write_text("x = 1  # sqa: AAAAA, BBBBB\n")
+    assert anchors.remove_anchor(path, "AAAAA") is True
+    assert path.read_text() == "x = 1  # sqa: BBBBB\n"
+
+
+def test_remove_anchor_drops_indented_comment_only_line(tmp_path):
+    # Indented comment-only line should still be dropped entirely.
+    path = tmp_path / "x.py"
+    path.write_text("def f():\n    # sqa: ABCDE\n    return 1\n")
+    assert anchors.remove_anchor(path, "ABCDE") is True
+    assert path.read_text() == "def f():\n    return 1\n"
+
+
 def test_find_anchors_in_file(tmp_path):
     path = tmp_path / "x.py"
     path.write_text("# sqa: AAAAA\ndef f(): pass\n# sqa: BBBBB\n")
     assert anchors.find_anchors_in_file(path) == ["AAAAA", "BBBBB"]
+
+
+def test_find_anchors_in_file_nonexistent_path(tmp_path):
+    # Non-existent paths should yield an empty list, not raise.
+    path = tmp_path / "does_not_exist.py"
+    assert anchors.find_anchors_in_file(path) == []
+
+
+def test_find_anchors_for_orphan_scan_nonexistent_path(tmp_path):
+    # Non-existent paths should yield an empty list, not raise.
+    path = tmp_path / "does_not_exist.py"
+    assert anchors.find_anchors_for_orphan_scan(path) == []
 
 
 def test_find_anchors_for_orphan_scan_python_skips_strings(tmp_path):

@@ -8,7 +8,6 @@ from sqa_tool import __version__, git_ops, paths
 from sqa_tool.commands import (
     diff_since_review,
     findings_for_file,
-    gc,
     init,
     mark_reviewed,
     needs_review,
@@ -113,14 +112,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Detect and auto-fix anchor/finding inconsistencies",
     )
 
-    gc_ = sub.add_parser("gc", help="Prune resolved findings older than a duration window")
-    gc_.add_argument(
-        "--older-than",
-        required=True,
-        help="Delete resolved findings whose JSON mtime is older than this (e.g. 30d). "
-        "Pass '0s' to delete every resolved finding.",
-    )
-
     return p
 
 
@@ -166,7 +157,6 @@ def main(argv: list[str] | None = None) -> int:
         "resolve": lambda: triage.resolve(project_root, args),
         "diff-since-review": lambda: diff_since_review.run(project_root, args),
         "orphans": lambda: orphans.run(project_root, args),
-        "gc": lambda: gc.run(project_root, args),
     }
     return dispatch[args.command]()
 

@@ -21,6 +21,7 @@ You are running a project review using `sqa-tool` and the `review-file` subagent
 
 4. **Drive the bounded review loop.** Repeat:
    - Run `sqa-tool needs-review --count`. If `0`, exit the loop.
+   - **Tell the user the count** at the start of each iteration in a single short line, e.g. `12 files remaining to review.` This gives them a live progress signal across batches.
    - Run `sqa-tool needs-review --limit=<max_agents>` to get the next batch of files.
    - Spawn one `review-file` subagent per file in the batch, **in parallel** (single message with multiple Agent tool calls). Wait for all to complete.
    - Continue until `needs-review --count` returns `0` or the safety cap (50 batches) is reached.

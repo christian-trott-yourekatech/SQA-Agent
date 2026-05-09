@@ -40,15 +40,23 @@ def _filter(
     return out
 
 
-def list_(project_root: Path, args: argparse.Namespace) -> int:
-    ids = findings.list_finding_ids(project_root)
+def _load_all(
+    project_root: Path,
+) -> tuple[list[tuple[str, findings.Finding]], int]:
+    """Load every finding; warn to stderr on failures; return (items, load_errors)."""
     items: list[tuple[str, findings.Finding]] = []
-    for fid in ids:
+    load_errors = 0
+    for fid in findings.list_finding_ids(project_root):
         try:
             items.append((fid, findings.load_finding(project_root, fid)))
         except (FileNotFoundError, ValueError) as e:
             print(f"warning: failed to load finding {fid}: {e}", file=sys.stderr, flush=True)
-            continue
+            load_errors += 1
+    return items, load_errors
+
+
+def list_(project_root: Path, args: argparse.Namespace) -> int:
+    items, _ = _load_all(project_root)
     items = _filter(items, args.triage, args.status)
     if args.count:
         print(len(items))
@@ -60,28 +68,40 @@ def list_(project_root: Path, args: argparse.Namespace) -> int:
 
 
 def status(project_root: Path, args: argparse.Namespace) -> int:
-    ids = findings.list_finding_ids(project_root)
+    items, load_errors = _load_all(project_root)
     by_triage: Counter[str] = Counter()
     by_severity: Counter[str] = Counter()
     by_status: Counter[str] = Counter()
-    load_errors = 0
-    for fid in ids:
-        try:
-            f = findings.load_finding(project_root, fid)
-        except (FileNotFoundError, ValueError) as e:
-            print(f"warning: failed to load finding {fid}: {e}", file=sys.stderr, flush=True)
-            load_errors += 1
-            continue
+    for _fid, f in items:
         triage_key = f.triage if f.triage is not None else "untriaged"
         by_triage[triage_key] += 1
         by_severity[f.severity] += 1
         by_status[f.status] += 1
+
+    # Compute files-needing-review count. Lazy import to avoid a circular
+    # ordering at module load time.
+    from sqa_tool.commands import needs_review as _nr
+
+    needs_review_count: int | None
+    try:
+        needs_review_count = len(_nr._changed_files(project_root))
+    except Exception as e:
+        # If config is missing or git ops fail, surface as null rather than
+        # blowing up the whole status output.
+        print(
+            f"warning: could not compute needs-review count: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        needs_review_count = None
+
     payload = {
-        "total": len(ids),
+        "total": len(items) + load_errors,
         "by_triage": dict(by_triage),
         "by_severity": dict(by_severity),
         "by_status": dict(by_status),
         "load_errors": load_errors,
+        "needs_review": needs_review_count,
     }
     print(json.dumps(payload, indent=2))
     return 0

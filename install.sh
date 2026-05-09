@@ -5,4 +5,4 @@
 set -euo pipefail
 
 uv tool install --reinstall \
-    git+https://github.com/christian-trott-yourekatech/Reviewer2.git
+    git+https://github.com/christian-trott-yourekatech/SQA-Agent.git

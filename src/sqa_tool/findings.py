@@ -54,16 +54,21 @@ def alloc_id(project_root: Path, max_attempts: int = 100) -> str:
     raise RuntimeError(f"Could not allocate a free ID after {max_attempts} attempts")
 
 
-def save_finding(project_root: Path, finding_id: str, finding: Finding) -> None:
-    """Write the finding to .sqa/findings/<id>.json."""
-    if not is_valid_id(finding_id):
-        raise ValueError(f"Invalid finding ID: {finding_id!r}")
+def _validate(finding: Finding) -> None:
+    """Raise ValueError if any Literal-typed field holds an out-of-contract value."""
     if finding.severity not in _VALID_SEVERITIES:
         raise ValueError(f"Invalid severity: {finding.severity!r}")
     if finding.triage is not None and finding.triage not in _VALID_TRIAGES:
         raise ValueError(f"Invalid triage: {finding.triage!r}")
     if finding.status not in _VALID_STATUSES:
         raise ValueError(f"Invalid status: {finding.status!r}")
+
+
+def save_finding(project_root: Path, finding_id: str, finding: Finding) -> None:
+    """Write the finding to .sqa/findings/<id>.json."""
+    if not is_valid_id(finding_id):
+        raise ValueError(f"Invalid finding ID: {finding_id!r}")
+    _validate(finding)
     path = paths.finding_path(project_root, finding_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(asdict(finding), indent=2) + "\n")
@@ -80,7 +85,7 @@ def load_finding(project_root: Path, finding_id: str) -> Finding:
 
 
 def _finding_from_dict(data: dict) -> Finding:
-    return Finding(
+    finding = Finding(
         message=data["message"],
         severity=data.get("severity", "info"),
         triage=data.get("triage"),
@@ -88,6 +93,8 @@ def _finding_from_dict(data: dict) -> Finding:
         rationale=data.get("rationale", ""),
         related_files=list(data.get("related_files", [])),
     )
+    _validate(finding)
+    return finding
 
 
 def list_finding_ids(project_root: Path) -> list[str]:

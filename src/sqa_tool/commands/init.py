@@ -29,24 +29,37 @@ def _bundled_dir(name: str) -> Path:
     )
 
 
+def _bundled_claude_entries(
+    project_root: Path,
+) -> list[tuple[Path, Path, str]]:
+    """Yield (src, dst, kind) for every bundled skill or agent.
+
+    Single source of truth for the bundled-layout filter rules: skills are
+    directories under `skills/`, agents are `.md` files under `agents/`.
+    Used by both the pre-flight conflict check and the actual copy phase
+    so they can't drift apart when the layout changes.
+    """
+    entries: list[tuple[Path, Path, str]] = []
+    skills_src = _bundled_dir("skills")
+    skills_dst = project_root / ".claude" / "skills"
+    for entry in skills_src.iterdir():
+        if entry.is_dir():
+            entries.append((entry, skills_dst / entry.name, "skill"))
+    agents_src = _bundled_dir("agents")
+    agents_dst = project_root / ".claude" / "agents"
+    for entry in agents_src.iterdir():
+        if entry.is_file() and entry.suffix == ".md":
+            entries.append((entry, agents_dst / entry.name, "agent"))
+    return entries
+
+
 def _planned_claude_targets(project_root: Path) -> list[Path]:
     """Return the absolute target paths `_scaffold_claude_dirs` would create.
 
     Used by the pre-flight conflict check in `run()` so existing entries
     abort the whole init rather than getting silently skipped.
     """
-    targets: list[Path] = []
-    skills_src = _bundled_dir("skills")
-    skills_dst = project_root / ".claude" / "skills"
-    for entry in skills_src.iterdir():
-        if entry.is_dir():
-            targets.append(skills_dst / entry.name)
-    agents_src = _bundled_dir("agents")
-    agents_dst = project_root / ".claude" / "agents"
-    for entry in agents_src.iterdir():
-        if entry.is_file() and entry.suffix == ".md":
-            targets.append(agents_dst / entry.name)
-    return targets
+    return [dst for _src, dst, _kind in _bundled_claude_entries(project_root)]
 
 
 def _scaffold_claude_dirs(project_root: Path) -> list[str]:
@@ -63,29 +76,13 @@ def _scaffold_claude_dirs(project_root: Path) -> list[str]:
     Returns project-relative paths of installed entries.
     """
     installed: list[str] = []
-
-    # Skills: directory-per-skill.
-    skills_src = _bundled_dir("skills")
-    skills_dst = project_root / ".claude" / "skills"
-    skills_dst.mkdir(parents=True, exist_ok=True)
-    for entry in skills_src.iterdir():
-        if not entry.is_dir():
-            continue
-        target_dir = skills_dst / entry.name
-        shutil.copytree(entry, target_dir)
-        installed.append(str(target_dir.relative_to(project_root)))
-
-    # Agents: flat .md files.
-    agents_src = _bundled_dir("agents")
-    agents_dst = project_root / ".claude" / "agents"
-    agents_dst.mkdir(parents=True, exist_ok=True)
-    for entry in agents_src.iterdir():
-        if not (entry.is_file() and entry.suffix == ".md"):
-            continue
-        target = agents_dst / entry.name
-        shutil.copy2(entry, target)
-        installed.append(str(target.relative_to(project_root)))
-
+    for src, dst, kind in _bundled_claude_entries(project_root):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "skill":
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+        installed.append(str(dst.relative_to(project_root)))
     return installed
 
 

@@ -65,7 +65,7 @@ v2 fixes both classes of problem.
 │   needs-review, mark-reviewed,                                 │
 │   findings-for-file, list-findings, show-finding, status,      │
 │   record-finding, triage, resolve,                             │
-│   orphans, gc, diff-since-review                               │
+│   orphans, diff-since-review                                   │
 └────────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -172,7 +172,7 @@ Field reference:
 | `message` | string | The finding itself. Plain prose. |
 | `severity` | enum: `info \| warning \| error` | |
 | `triage` | enum: `auto \| interactive \| ignore` or `null` | `null` means untriaged. |
-| `status` | enum: `open \| resolved` | |
+| `status` | enum: `open` | Reserved for future use. Findings on disk are always `open`; `resolve` deletes the JSON file rather than transitioning to a `resolved` status. The audit trail of resolutions lives in git history. |
 | `rationale` | string | Current-state reasoning. Updated on every state change; the LLM is responsible for keeping it coherent. **Not** a history log. |
 | `related_files` | string[] | Files the finding refers to. Paths are project-relative (the same convention as `git ls-files` output). Used by `findings-for-file` to surface higher-scope findings to file reviews, and by `orphans` to detect when referenced files have been renamed/deleted. |
 
@@ -424,12 +424,18 @@ sqa-tool record-finding \
     `orphans` on the next review.
 
 sqa-tool triage <id> auto|interactive|ignore --rationale=<text>
+    Updates the finding's triage classification and rationale. The
+    rationale is fully replaced (the LLM is responsible for writing
+    coherent prose).
+
 sqa-tool resolve <id> --rationale=<text>
-    State transitions. Each writes the finding JSON; the rationale is
-    fully replaced (the LLM is responsible for coherent prose).
-    "resolve" also removes the anchors from source. There is no
-    "reopen" — re-surfacing a resolved concern means recording a fresh
-    finding (anchors are gone after resolve).
+    Strips anchors from source/`.sqa.md` files referencing the finding,
+    then DELETES the finding's JSON file. The rationale is echoed back
+    to the caller as confirmation but not persisted — the audit trail
+    of "what was resolved and why" lives in the user's git commit
+    message rather than in a transient JSON field. There is no
+    "reopen": re-surfacing a previously-resolved concern means
+    recording a fresh finding.
 
 sqa-tool orphans
     Detects rot in finding/anchor consistency. Some classes are fixed
@@ -447,11 +453,6 @@ sqa-tool orphans
       - Findings whose related_files contains nonexistent paths.
 
     Run implicitly at the start of each review session.
-
-sqa-tool gc [--older-than=<duration>]
-    Prune resolved finding JSON files. Default keeps everything; with
-    --older-than (e.g. 30d), only resolved findings whose JSON file
-    hasn't been modified within the window are deleted.
 
 sqa-tool diff-since-review <path>
     Print git diff of <path> against its last-reviewed blob. Used by

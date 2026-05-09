@@ -42,11 +42,6 @@ def test_remove(initialized: Path):
     assert file_status.load(initialized) == {"src/b.py": "h2"}
 
 
-def test_save_then_load(initialized: Path):
-    file_status.save(initialized, {"x.py": "hash1", "y.py": "hash2"})
-    assert file_status.load(initialized) == {"x.py": "hash1", "y.py": "hash2"}
-
-
 def test_persisted_format_is_json(initialized: Path):
     file_status.update(initialized, "x.py", "hash1")
     raw = paths.file_status_path(initialized).read_text()
@@ -66,8 +61,7 @@ def test_remove_on_empty_store_is_noop(initialized: Path):
 
 def test_remove_on_missing_file_is_noop(initialized: Path):
     status_path = paths.file_status_path(initialized)
-    if status_path.exists():
-        status_path.unlink()
+    status_path.unlink()
     file_status.remove(initialized, "src/missing.py")
     assert file_status.load(initialized) == {}
 

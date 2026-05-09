@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sqa_tool import findings
+from sqa_tool import findings, paths
 
 
 def test_id_format():
@@ -53,7 +53,7 @@ def test_save_load_round_trip(initialized: Path):
 def test_no_id_field_in_json(initialized: Path):
     fid = findings.alloc_id(initialized)
     findings.save_finding(initialized, fid, findings.Finding(message="hi"))
-    raw = json.loads((initialized / ".sqa" / "findings" / f"{fid}.json").read_text())
+    raw = json.loads(paths.finding_path(initialized, fid).read_text())
     assert "id" not in raw
 
 

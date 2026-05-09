@@ -40,22 +40,44 @@ def _delete_empty_scope_md_files(project_root: Path) -> list[str]:
         except (UnicodeDecodeError, OSError):
             continue
         if not ids:
-            abs_path.unlink()
+            git_ops.git_rm(project_root, rel)
             deleted.append(rel)
     return deleted
 
 
+def _load_findings(
+    project_root: Path,
+) -> tuple[dict[str, "findings.Finding"], list[str]]:
+    """Load every finding by ID; return (loaded, unreadable).
+
+    `unreadable` collects IDs whose JSON failed to parse (ValueError) — these
+    get reported as a distinct orphan class instead of being silently dropped.
+    IDs that raise FileNotFoundError (a list/load race) are simply skipped.
+    """
+    loaded: dict[str, findings.Finding] = {}
+    unreadable: list[str] = []
+    for fid in findings.list_finding_ids(project_root):
+        try:
+            loaded[fid] = findings.load_finding(project_root, fid)
+        except FileNotFoundError:
+            continue
+        except ValueError:
+            unreadable.append(fid)
+    return loaded, unreadable
+
+
 def _add_missing_related_for_source_anchors(
-    project_root: Path, anchored: dict[str, list[str]]
+    project_root: Path,
+    anchored: dict[str, list[str]],
+    loaded: dict[str, "findings.Finding"],
 ) -> list[tuple[str, str]]:
     """Auto-fix: for each finding whose anchor is in a source file (not .sqa.md),
     if the file isn't in related_files, add it. Returns (finding_id, rel_path) pairs added.
     """
     added: list[tuple[str, str]] = []
     for fid, rels in anchored.items():
-        try:
-            f = findings.load_finding(project_root, fid)
-        except (FileNotFoundError, ValueError):
+        f = loaded.get(fid)
+        if f is None:
             continue
         modified = False
         for rel in rels:
@@ -70,37 +92,29 @@ def _add_missing_related_for_source_anchors(
     return added
 
 
-def _report(project_root: Path, anchored: dict[str, list[str]]) -> dict[str, list]:
+def _report(
+    project_root: Path,
+    anchored: dict[str, list[str]],
+    loaded: dict[str, "findings.Finding"],
+    unreadable: list[str],
+) -> dict[str, list]:
     """Compute the non-auto-fixable orphan classes.
 
-    Resolved findings are excluded from `findings_without_anchors`: by design,
-    `resolve` strips the anchor while keeping the JSON file (until `gc`), so
-    "resolved + no anchor" is the expected terminal state, not an orphan.
+    Findings whose JSON failed to parse are surfaced as a distinct
+    `unreadable_findings` class — exactly the rot the orphans command exists
+    to flag — rather than silently disappearing from the report.
     """
-    all_ids = findings.list_finding_ids(project_root)
-    open_ids: set[str] = set()
-    for fid in all_ids:
-        try:
-            f = findings.load_finding(project_root, fid)
-        except (FileNotFoundError, ValueError):
-            continue
-        if f.status != "resolved":
-            open_ids.add(fid)
-
+    open_ids = {fid for fid, f in loaded.items() if f.status != "resolved"}
     anchor_ids = set(anchored.keys())
+    json_ids = set(loaded) | set(unreadable)
 
     findings_without_anchors = sorted(open_ids - anchor_ids)
-    anchors_without_findings: list[dict] = []
-    json_ids = set(all_ids)
-    for fid in sorted(anchor_ids - json_ids):
-        anchors_without_findings.append({"id": fid, "in_files": anchored[fid]})
-
+    anchors_without_findings = [
+        {"id": fid, "in_files": anchored[fid]} for fid in sorted(anchor_ids - json_ids)
+    ]
     stale_related: list[dict] = []
-    for fid in sorted(json_ids):
-        try:
-            f = findings.load_finding(project_root, fid)
-        except (FileNotFoundError, ValueError):
-            continue
+    for fid in sorted(loaded):
+        f = loaded[fid]
         missing = [rel for rel in f.related_files if not (project_root / rel).exists()]
         if missing:
             stale_related.append({"id": fid, "missing": missing})
@@ -109,14 +123,16 @@ def _report(project_root: Path, anchored: dict[str, list[str]]) -> dict[str, lis
         "findings_without_anchors": findings_without_anchors,
         "anchors_without_findings": anchors_without_findings,
         "stale_related_files": stale_related,
+        "unreadable_findings": sorted(unreadable),
     }
 
 
 def run(project_root: Path, args: argparse.Namespace) -> int:
     deleted_md = _delete_empty_scope_md_files(project_root)
     anchored = _collect_anchored_ids(project_root)
-    related_added = _add_missing_related_for_source_anchors(project_root, anchored)
-    report = _report(project_root, anchored)
+    loaded, unreadable = _load_findings(project_root)
+    related_added = _add_missing_related_for_source_anchors(project_root, anchored, loaded)
+    report = _report(project_root, anchored, loaded, unreadable)
 
     payload = {
         "auto_fixed": {

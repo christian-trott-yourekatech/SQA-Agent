@@ -14,8 +14,8 @@ dependencies = []
 sqa-tool = "sqa_tool.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/christian-trott-yourekatech/Reviewer2"
-Repository = "https://github.com/christian-trott-yourekatech/Reviewer2"
+Homepage = "https://github.com/christian-trott-yourekatech/SQA-Agent"
+Repository = "https://github.com/christian-trott-yourekatech/SQA-Agent"
 
 [build-system]
 requires = ["hatchling"]

@@ -116,7 +116,6 @@ def test_record_finding_with_anchor_in_sqa_md(initialized: Path, capsys):
 
 def test_record_finding_anchor_uncommentable_fails(initialized: Path, capsys):
     (initialized / "data.json").write_text("{}")
-    capsys.readouterr()
     rc = _run(
         initialized,
         "record-finding",
