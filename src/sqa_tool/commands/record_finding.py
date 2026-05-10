@@ -13,9 +13,9 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
         rationale=args.rationale or "",
         related_files=list(args.related or []),
     )
-    finding_id = findings.alloc_id(project_root)
-    findings.save_finding(project_root, finding_id, finding)
-
+    # Validate the anchor target BEFORE allocating an ID / writing the finding,
+    # so that validation failures don't require a rollback.
+    target: Path | None = None
     if args.anchor:
         target = (project_root / args.anchor).resolve()
         try:
@@ -25,7 +25,6 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
                 f"error: anchor target {args.anchor} resolves outside the project root.",
                 flush=True,
             )
-            findings.delete_finding(project_root, finding_id)
             return 1
         if not anchors.is_commentable(target):
             print(
@@ -33,8 +32,12 @@ def run(project_root: Path, args: argparse.Namespace) -> int:
                 f"Insert the anchor into the nearest enclosing .sqa.md instead.",
                 flush=True,
             )
-            findings.delete_finding(project_root, finding_id)
             return 1
+
+    finding_id = findings.alloc_id(project_root)
+    findings.save_finding(project_root, finding_id, finding)
+
+    if target is not None:
         # `insert_anchor` takes its own flock; if any I/O fails, roll back the
         # finding JSON so we don't leave an orphan in .sqa/findings.
         try:

@@ -1,4 +1,4 @@
-"""Tests for findings module: ID alloc, dataclass, JSON round-trip."""
+"""Tests for findings module: ID alloc, dataclass, JSON round-trip, corruption paths."""
 
 import json
 from pathlib import Path
@@ -88,3 +88,61 @@ def test_load_missing_finding(initialized: Path):
 def test_load_invalid_id_format(initialized: Path):
     with pytest.raises(ValueError):
         findings.load_finding(initialized, "lower")
+
+
+# Corruption-path tests for load_finding: malformed JSON, wrong top-level type,
+# missing required fields, and wrong-typed fields all surface as ValueError.
+
+
+def _write_raw_finding(initialized: Path, payload: str) -> str:
+    """Allocate an ID and write the raw payload directly to its finding path."""
+    fid = findings.alloc_id(initialized)
+    path = paths.finding_path(initialized, fid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload)
+    return fid
+
+
+def test_load_malformed_json(initialized: Path):
+    fid = _write_raw_finding(initialized, "{not valid json")
+    with pytest.raises(ValueError, match="invalid JSON"):
+        findings.load_finding(initialized, fid)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '"just a string"',
+        "[]",
+        "42",
+        "null",
+    ],
+)
+def test_load_non_dict_top_level(initialized: Path, payload: str):
+    fid = _write_raw_finding(initialized, payload)
+    with pytest.raises(ValueError, match="expected a JSON object"):
+        findings.load_finding(initialized, fid)
+
+
+def test_load_missing_message_field(initialized: Path):
+    fid = _write_raw_finding(initialized, json.dumps({"severity": "info"}))
+    with pytest.raises(ValueError, match="missing required field"):
+        findings.load_finding(initialized, fid)
+
+
+@pytest.mark.parametrize(
+    "data,match",
+    [
+        ({"message": 123}, "message must be a string"),
+        ({"message": "ok", "rationale": 5}, "rationale must be a string"),
+        ({"message": "ok", "related_files": "not-a-list"}, "related_files must be a list"),
+        (
+            {"message": "ok", "related_files": ["fine.py", 7]},
+            r"related_files\[1\] must be a string",
+        ),
+    ],
+)
+def test_load_wrong_type_fields(initialized: Path, data: dict, match: str):
+    fid = _write_raw_finding(initialized, json.dumps(data))
+    with pytest.raises(ValueError, match=match):
+        findings.load_finding(initialized, fid)

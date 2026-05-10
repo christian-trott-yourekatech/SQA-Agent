@@ -91,8 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="Counts and breakdowns of findings")
 
     nr = sub.add_parser("needs-review", help="List files whose blob has changed since last review")
-    nr.add_argument("--count", action="store_true")
-    nr.add_argument("--limit", type=_nonneg_int)
+    nr.add_argument("--count", action="store_true", help="Print just the integer count")
+    nr.add_argument("--limit", type=_nonneg_int, help="Print at most N files")
 
     mr = sub.add_parser("mark-reviewed", help="Record a file's current blob hash")
     mr.add_argument("path")

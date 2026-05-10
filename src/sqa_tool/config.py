@@ -41,6 +41,8 @@ def load_config(project_root: Path) -> Config:
     with open(path, "rb") as f:
         data = tomllib.load(f)
     files = data.get("files", {})
+    if not isinstance(files, dict):
+        raise ValueError("config: [files] must be a table")
     include = files.get("include", [])
     exclude = files.get("exclude", [])
     if not isinstance(include, list) or not all(isinstance(x, str) for x in include):

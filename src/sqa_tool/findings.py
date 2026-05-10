@@ -119,6 +119,16 @@ def _finding_from_dict(data: dict) -> Finding:
         raise ValueError(f"message must be a string, got {type(message).__name__}")
     if "rationale" in overrides and not isinstance(overrides["rationale"], str):
         raise ValueError(f"rationale must be a string, got {type(overrides['rationale']).__name__}")
+    if "severity" in overrides and not isinstance(overrides["severity"], str):
+        raise ValueError(f"severity must be a string, got {type(overrides['severity']).__name__}")
+    if (
+        "triage" in overrides
+        and overrides["triage"] is not None
+        and not isinstance(overrides["triage"], str)
+    ):
+        raise ValueError(
+            f"triage must be a string or null, got {type(overrides['triage']).__name__}"
+        )
     finding = Finding(message=message, **overrides)
     _validate(finding)
     return finding

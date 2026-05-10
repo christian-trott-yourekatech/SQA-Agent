@@ -4,6 +4,7 @@ import difflib
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal, overload
 
 
 class GitError(RuntimeError):
@@ -28,13 +29,33 @@ def _git_bytes(project_root: Path, *args: str) -> bytes:
     return _run_git(project_root, args, binary=True).stdout
 
 
+@overload
+def _run_git(
+    project_root: Path,
+    args: tuple[str, ...],
+    *,
+    input_data: str | bytes | None = ...,
+    binary: Literal[False] = ...,
+) -> "subprocess.CompletedProcess[str]": ...
+
+
+@overload
+def _run_git(
+    project_root: Path,
+    args: tuple[str, ...],
+    *,
+    input_data: str | bytes | None = ...,
+    binary: Literal[True],
+) -> "subprocess.CompletedProcess[bytes]": ...
+
+
 def _run_git(
     project_root: Path,
     args: tuple[str, ...],
     *,
     input_data: str | bytes | None = None,
     binary: bool = False,
-):
+) -> "subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]":
     """Shared subprocess wrapper for `_git` / `_git_bytes`. Raises `GitError`."""
     try:
         return subprocess.run(

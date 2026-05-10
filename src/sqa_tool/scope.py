@@ -68,12 +68,12 @@ def findings_for_file(project_root: Path, rel_file: str) -> list[tuple[str, find
         for fid in anchors.find_anchors_for_orphan_scan(scope_file):
             if fid in seen:
                 continue
+            seen.add(fid)
             try:
                 f = findings.load_finding(project_root, fid)
             except FileNotFoundError:
                 continue
             if _matches_related(rel_file, f.related_files):
-                seen.add(fid)
                 out.append((fid, f))
 
     return out

@@ -44,11 +44,32 @@ def resolve(project_root: Path, args: argparse.Namespace) -> int:
     explanation for the fix lives in the user's commit message rather than in
     a JSON field that gets deleted moments later.
     """
+    # Reject malformed IDs up front so an invalid ID can't slip into the
+    # destructive cleanup path below — load_finding raises ValueError for
+    # both invalid-ID-format and corrupt-JSON, but only the second deserves
+    # to proceed.
+    if not findings.is_valid_id(args.id):
+        print(f"error: Invalid finding ID: {args.id!r}", flush=True)
+        return 1
     try:
         findings.load_finding(project_root, args.id)
-    except (FileNotFoundError, ValueError) as e:
+    except FileNotFoundError as e:
+        # Unknown ID — abort. We don't perform destructive cleanup for an ID
+        # whose JSON doesn't exist (likely a typo, or stale anchors from a
+        # previously-resolved finding that should be cleaned via the orphans
+        # path instead).
         print(f"error: {e}", flush=True)
         return 1
+    except ValueError as e:
+        # Corrupt JSON. The user has explicitly requested resolution, the JSON
+        # is going to be deleted anyway, and aborting would leave anchors with
+        # no tool path to clean them up (manual source edits). Proceed loudly.
+        print(f"warning: {e}", flush=True)
+        print(
+            f"resolving {args.id} despite corrupt JSON: "
+            "stripping anchors and deleting the file.",
+            flush=True,
+        )
     for path in _find_files_with_anchor(project_root, args.id):
         anchors.remove_anchor(path, args.id)
     findings.delete_finding(project_root, args.id)
