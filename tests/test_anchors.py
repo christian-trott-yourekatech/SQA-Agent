@@ -249,18 +249,6 @@ def test_remove_anchor_skips_markdown_fenced_code(tmp_path):
     assert path.read_text() == "```\n# sqa: ABCDE\n```\n"
 
 
-def test_find_anchors_in_file(tmp_path):
-    path = tmp_path / "x.py"
-    path.write_text("# sqa: AAAAA\ndef f(): pass\n# sqa: BBBBB\n")
-    assert anchors.find_anchors_in_file(path) == ["AAAAA", "BBBBB"]
-
-
-def test_find_anchors_in_file_nonexistent_path(tmp_path):
-    # Non-existent paths should yield an empty list, not raise.
-    path = tmp_path / "does_not_exist.py"
-    assert anchors.find_anchors_in_file(path) == []
-
-
 def test_find_anchors_for_orphan_scan_nonexistent_path(tmp_path):
     # Non-existent paths should yield an empty list, not raise.
     path = tmp_path / "does_not_exist.py"

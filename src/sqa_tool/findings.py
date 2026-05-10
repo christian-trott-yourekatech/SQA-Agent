@@ -98,10 +98,15 @@ def _finding_from_dict(data: dict) -> Finding:
     than re-stating the default here, so a default change in one place
     can't silently diverge from the loader.
     """
+    if not isinstance(data, dict):
+        raise ValueError(f"expected a JSON object at the top level, got {type(data).__name__}")
     optional_names = {f.name for f in fields(Finding)} - {"message"}
     overrides = {k: data[k] for k in optional_names if k in data}
     if "related_files" in overrides:
-        overrides["related_files"] = list(overrides["related_files"])
+        rf = overrides["related_files"]
+        if not isinstance(rf, list):
+            raise ValueError(f"related_files must be a list, got {type(rf).__name__}")
+        overrides["related_files"] = list(rf)
     finding = Finding(message=data["message"], **overrides)
     _validate(finding)
     return finding

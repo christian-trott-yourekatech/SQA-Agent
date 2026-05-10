@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqa_tool.findings import ID_LENGTH, is_valid_id
+from sqa_tool.findings import ID_ALPHABET, ID_LENGTH, is_valid_id
 
 # Map file extension (lowercased, no dot) → comment style.
 # Line styles: a single string is the line-comment prefix.
@@ -128,9 +128,10 @@ def comment_for(path: Path, body: str) -> str:
 # A negative lookbehind ensures we don't match when 'sqa:' is preceded by a
 # word character (e.g. 'foosqa: ABCDE'), so the anchor must be at a word
 # boundary (start of string or after a non-word character like '#', '//', etc.).
+_ID_CHARCLASS = f"[{re.escape(ID_ALPHABET)}]"
 ANCHOR_RE = re.compile(
-    r"(?<![A-Za-z0-9_])sqa:\s*(?P<ids>[A-Z2-7]{" + str(ID_LENGTH) + r"}"
-    r"(?:\s*,\s*[A-Z2-7]{" + str(ID_LENGTH) + r"})*)"
+    rf"(?<![A-Za-z0-9_])sqa:\s*(?P<ids>{_ID_CHARCLASS}{{{ID_LENGTH}}}"
+    rf"(?:\s*,\s*{_ID_CHARCLASS}{{{ID_LENGTH}}})*)"
 )
 
 
@@ -380,13 +381,6 @@ def _remove_anchor_locked(path: Path, finding_id: str) -> bool:
     return changed
 
 
-def find_anchors_in_file(path: Path) -> list[str]:
-    """Return all finding IDs referenced by anchors in `path`."""
-    if not path.exists():
-        return []
-    return parse_ids(path.read_text())
-
-
 def _scan_view(path: Path, text: str) -> str:
     """Return `text` with constructs that may look like anchors but aren't masked.
 
@@ -517,8 +511,9 @@ def _strip_markdown_code_blocks(text: str) -> str:
 
 
 def find_anchors_for_orphan_scan(path: Path) -> list[str]:
-    """Like `find_anchors_in_file`, but skips anchors that live inside
-    Python string literals or markdown fenced/inline code spans.
+    """Return finding IDs referenced by real anchors in `path`, skipping
+    anchors that live inside Python string literals or markdown
+    fenced/inline code spans.
 
     Use this whenever a caller needs the set of *real* anchors — anchors
     that participate in the finding/anchor lifecycle — and must not treat

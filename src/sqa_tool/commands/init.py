@@ -137,36 +137,55 @@ def _install_entries(project_root: Path, entries: list[BundledEntry]) -> Install
     return report
 
 
-def run(project_root: Path) -> int:
-    sqa = paths.sqa_dir(project_root)
-    sqa_existed = sqa.exists()
+def _bootstrap_sqa(project_root: Path) -> int | None:
+    """Create `.sqa/` if absent, or verify it is complete.
 
-    if not sqa_existed:
+    Returns `None` on success and an exit code when init must abort
+    (currently only when `.sqa/` exists but is missing required files).
+    """
+    sqa = paths.sqa_dir(project_root)
+    sqa_rel = sqa.relative_to(project_root)
+
+    if not sqa.exists():
         sqa.mkdir(parents=True)
         paths.findings_dir(project_root).mkdir()
         paths.config_path(project_root).write_text(DEFAULT_CONFIG_TEXT)
         paths.file_status_path(project_root).write_text("{}\n")
-        print(f"Initialized {sqa.relative_to(project_root)}/", flush=True)
-    else:
+        print(f"Initialized {sqa_rel}/", flush=True)
+        return None
+
+    findings_dir = paths.findings_dir(project_root)
+    config_path = paths.config_path(project_root)
+    file_status_path = paths.file_status_path(project_root)
+    missing: list[str] = []
+    if not findings_dir.is_dir():
+        missing.append(f"{findings_dir.relative_to(project_root)}/")
+    if not config_path.is_file():
+        missing.append(str(config_path.relative_to(project_root)))
+    if not file_status_path.is_file():
+        missing.append(str(file_status_path.relative_to(project_root)))
+    if missing:
         print(
-            f"{sqa.relative_to(project_root)}/ already exists; preserving project state. "
-            "Refreshing skill/agent framework files only.",
+            f"error: {sqa_rel}/ exists but is incomplete. "
+            f"Missing: {', '.join(missing)}. "
+            f"Restore the missing item(s) from version control, or remove "
+            f"{sqa_rel}/ entirely to re-initialize from scratch.",
+            file=sys.stderr,
             flush=True,
         )
+        return 1
+    print(
+        f"{sqa_rel}/ already exists; preserving project state. "
+        "Refreshing skill/agent framework files only.",
+        flush=True,
+    )
+    return None
 
-    try:
-        entries = _bundled_claude_entries(project_root)
-    except FileNotFoundError as e:
-        print(f"warning: skill/agent scaffolding skipped — {e}", file=sys.stderr, flush=True)
-        entries = []
 
-    report = _install_entries(project_root, entries)
-
+def _print_install_report(report: InstallReport) -> None:
+    """Emit the three optional install-summary sections."""
     if report.framework_installed:
-        print(
-            f"\nInstalled {len(report.framework_installed)} framework file(s):",
-            flush=True,
-        )
+        print(f"\nInstalled {len(report.framework_installed)} framework file(s):", flush=True)
         for p in report.framework_installed:
             print(f"  {p}", flush=True)
 
@@ -188,7 +207,10 @@ def run(project_root: Path) -> int:
         for p in report.project_preserved:
             print(f"  {p}", flush=True)
 
-    if not sqa_existed:
+
+def _print_post_init_guidance(project_paths: list[str], fresh_init: bool) -> None:
+    """Emit the gitignore note (only on fresh init) and the project-paths section."""
+    if fresh_init:
         print("", flush=True)
         print(
             "Note: by default, .sqa/findings/ will be tracked by git, preserving the\n"
@@ -198,9 +220,6 @@ def run(project_root: Path) -> int:
             "loss of git-based history and merge-friendly storage.",
             flush=True,
         )
-    project_paths = sorted(
-        str(e.dst.relative_to(project_root)) for e in entries if not e.is_framework
-    )
     if project_paths:
         print("", flush=True)
         print(
@@ -216,4 +235,25 @@ def run(project_root: Path) -> int:
             "<agent>.md) are overwritten so you get the latest workflow logic.",
             flush=True,
         )
+
+
+def run(project_root: Path) -> int:
+    fresh_init = not paths.sqa_dir(project_root).exists()
+    rc = _bootstrap_sqa(project_root)
+    if rc is not None:
+        return rc
+
+    try:
+        entries = _bundled_claude_entries(project_root)
+    except FileNotFoundError as e:
+        print(f"warning: skill/agent scaffolding skipped — {e}", file=sys.stderr, flush=True)
+        entries = []
+
+    report = _install_entries(project_root, entries)
+    _print_install_report(report)
+
+    project_paths = sorted(
+        str(e.dst.relative_to(project_root)) for e in entries if not e.is_framework
+    )
+    _print_post_init_guidance(project_paths, fresh_init)
     return 0
