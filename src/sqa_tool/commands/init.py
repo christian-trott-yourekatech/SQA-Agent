@@ -52,8 +52,9 @@ def _bundled_claude_entries(
     Framework files are overwritten by `init`; project-specific files are
     preserved when they already exist (created when they don't).
 
-    For skills: walks `skills/<name>/` recursively. `SKILL.md` is framework;
-    everything else is project-specific.
+    For skills: walks the top level of `skills/<name>/` (one level — nested
+    files are not picked up). `SKILL.md` is framework; everything else
+    (e.g. `project.md`) is project-specific.
 
     For agents: walks `agents/` for `.md` files. Files whose stem is in
     `_FRAMEWORK_AGENT_STEMS` are framework; the rest (`-prompts`,

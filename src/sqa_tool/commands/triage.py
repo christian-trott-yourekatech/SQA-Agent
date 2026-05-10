@@ -11,7 +11,7 @@ def _find_files_with_anchor(project_root: Path, finding_id: str) -> list[Path]:
     for _rel, path in git_ops.walk_tracked_files(project_root):
         try:
             ids = anchors.find_anchors_for_orphan_scan(path)
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError:
             continue
         if finding_id in ids:
             out.append(path)
@@ -27,6 +27,7 @@ def triage(project_root: Path, args: argparse.Namespace) -> int:
     f.triage = args.decision
     f.rationale = args.rationale
     findings.save_finding(project_root, args.id, f)
+    print(f"triaged {args.id}: {args.decision}", flush=True)
     return 0
 
 

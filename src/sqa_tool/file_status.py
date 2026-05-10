@@ -31,14 +31,28 @@ def _locked(path: Path, lock_op: int = fcntl.LOCK_EX) -> Iterator[int]:
         os.close(fd)
 
 
+def _read_all(fd: int) -> str:
+    """Seek to start and read the entire file from `fd`, decoded as UTF-8."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    return os.read(fd, os.fstat(fd).st_size).decode()
+
+
 def load(project_root: Path) -> dict[str, str]:
-    """Load the file_status mapping (rel_path → blob hash)."""
+    """Load the file_status mapping (rel_path → blob hash).
+
+    Returns `{}` if the file is missing or empty. Empty-file handling
+    matters because `_locked` only seeds `{}` under `LOCK_EX`; a `LOCK_SH`
+    reader observing a zero-byte file (e.g. between `O_CREAT` and the
+    first writer's `_write_locked`) would otherwise feed an empty string
+    to `_parse_status` and trip a JSON-decode error.
+    """
     path = paths.file_status_path(project_root)
     if not path.exists():
         return {}
     with _locked(path, fcntl.LOCK_SH) as fd:
-        os.lseek(fd, 0, os.SEEK_SET)
-        raw = os.read(fd, os.fstat(fd).st_size).decode()
+        raw = _read_all(fd)
+        if raw == "":
+            return {}
         return _parse_status(raw, path)
 
 
@@ -62,9 +76,7 @@ def _mutate(project_root: Path, fn: Callable[[dict[str, str]], None]) -> None:
     """Run a locked read-modify-write cycle, applying `fn` to the dict in place."""
     path = paths.file_status_path(project_root)
     with _locked(path) as fd:
-        os.lseek(fd, 0, os.SEEK_SET)
-        raw = os.read(fd, os.fstat(fd).st_size).decode()
-        status = _parse_status(raw, path)
+        status = _parse_status(_read_all(fd), path)
         fn(status)
         _write_locked(fd, status)
 

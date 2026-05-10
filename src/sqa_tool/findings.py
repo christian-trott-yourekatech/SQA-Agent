@@ -91,6 +91,8 @@ def load_finding(project_root: Path, finding_id: str) -> Finding:
         raise ValueError(
             f"Corrupted finding {finding_id} at {path}: missing required field {e}"
         ) from e
+    except ValueError as e:
+        raise ValueError(f"Corrupted finding {finding_id} at {path}: {e}") from e
 
 
 def _finding_from_dict(data: dict) -> Finding:

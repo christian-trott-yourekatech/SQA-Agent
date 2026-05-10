@@ -66,6 +66,12 @@ def test_remove_on_missing_file_is_noop(initialized: Path):
     assert file_status.load(initialized) == {}
 
 
+def test_load_on_missing_file_returns_empty(initialized: Path):
+    status_path = paths.file_status_path(initialized)
+    status_path.unlink()
+    assert file_status.load(initialized) == {}
+
+
 def test_load_raises_on_corrupt_json(initialized: Path):
     status_path = paths.file_status_path(initialized)
     status_path.write_text("{not valid json")

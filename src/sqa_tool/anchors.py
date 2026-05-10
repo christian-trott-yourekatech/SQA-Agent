@@ -143,16 +143,51 @@ def insert_anchor(path: Path, finding_id: str) -> None:
             sep = "" if text.endswith("\n") else "\n"
             path.write_text(text + sep + comment + "\n")
             return
-        # No prior anchor — prepend, respecting a shebang on line 1.
+        # No prior anchor — prepend, respecting any header content that must
+        # remain on line 1 (or as the leading block).
         lines = text.splitlines(keepends=True)
-        insert_at = 0
-        if lines and lines[0].startswith("#!"):
-            insert_at = 1
+        insert_at = _prepend_skip(path, lines)
         new_text = "".join(lines[:insert_at]) + comment + "\n" + "".join(lines[insert_at:])
         path.write_text(new_text)
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def _prepend_skip(path: Path, lines: list[str]) -> int:
+    """Return the index where a fresh anchor comment can be safely prepended.
+
+    Skips header content that must remain at the top of the file:
+      - `#!` shebang on line 1 (any file).
+      - YAML front matter `--- ... ---` block on line 1 (markdown).
+      - `<!DOCTYPE ...>` on line 1 (HTML).
+      - `<?xml ... ?>` declaration on line 1 (XML/HTML).
+    """
+    if not lines:
+        return 0
+    first = lines[0]
+    insert_at = 0
+    if first.startswith("#!"):
+        insert_at = 1
+    ext = _ext(path)
+    if ext in ("md", "markdown") and first.rstrip("\r\n") == "---":
+        # Find the closing `---` on its own line.
+        for i in range(1, len(lines)):
+            if lines[i].rstrip("\r\n") == "---":
+                return i + 1
+        # Unterminated front matter — fall through (don't try to be clever).
+    if ext in ("html", "htm", "xml"):
+        stripped = first.lstrip().rstrip("\r\n")
+        if stripped.startswith("<?xml") or stripped.lower().startswith("<!doctype"):
+            insert_at = 1
+            # Allow both an XML decl on line 1 AND a doctype on line 2.
+            if (
+                len(lines) > 1
+                and stripped.startswith("<?xml")
+                and lines[1].lstrip().lower().startswith("<!doctype")
+            ):
+                insert_at = 2
+    return insert_at
 
 
 def _comment_style(path: Path) -> tuple[str, str | None]:
@@ -255,10 +290,26 @@ def _remove_anchor_locked(path: Path, finding_id: str) -> bool:
         # Unknown extension — fall back to context-only heuristics.
         opener, closer = None, None
 
+    # Match against a "scan view" that blanks out content inside Python
+    # string literals and markdown code spans/fences, so an anchor-looking
+    # ID inside e.g. `parse_ids("# sqa: ABCDE")` in a fixture isn't matched
+    # and the surrounding line corrupted. The strip helpers preserve byte
+    # offsets and newlines, so per-line matches index identically into the
+    # original text used for the rewrite.
+    suffix = path.suffix.lower()
+    scan_text = text
+    if suffix == ".py":
+        scan_text = _strip_python_strings(scan_text)
+    elif suffix in (".md", ".markdown"):
+        scan_text = _strip_markdown_code_blocks(scan_text)
+        scan_text = _strip_markdown_inline_code(scan_text)
+
     new_lines: list[str] = []
     changed = False
-    for line in text.splitlines(keepends=True):
-        m = ANCHOR_RE.search(line)
+    orig_lines = text.splitlines(keepends=True)
+    scan_lines = scan_text.splitlines(keepends=True)
+    for line, scan_line in zip(orig_lines, scan_lines, strict=True):
+        m = ANCHOR_RE.search(scan_line)
         if not m:
             new_lines.append(line)
             continue
@@ -435,12 +486,15 @@ def _strip_markdown_code_blocks(text: str) -> str:
 
 def find_anchors_for_orphan_scan(path: Path) -> list[str]:
     """Like `find_anchors_in_file`, but skips anchors that live inside
-    Python string literals or markdown fenced code blocks.
+    Python string literals or markdown fenced/inline code spans.
 
-    This is the function the orphans detector should use: anchors inside
-    test fixtures (string literals) or documentation examples (fenced
-    code blocks) are intentional non-anchors and should not be reported
-    as anchors-without-findings.
+    Use this whenever a caller needs the set of *real* anchors — anchors
+    that participate in the finding/anchor lifecycle — and must not treat
+    documentation examples or test fixtures as anchors. Both `orphans`
+    (which would otherwise report fixture IDs as anchors-without-findings)
+    and `resolve` (which uses the result to locate files to call
+    `remove_anchor` on, and must not strip IDs from inside fixtures) rely
+    on this filtering.
     """
     if not path.exists():
         return []

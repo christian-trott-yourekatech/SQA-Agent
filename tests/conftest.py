@@ -1,6 +1,5 @@
 """Shared fixtures: a temp project that's a real git repo with .sqa/ initialized."""
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -19,21 +18,25 @@ def _commit(project: Path, msg: str = "x") -> None:
     _git(project, "commit", "-q", "-m", msg)
 
 
-def _run(project: Path, *argv: str, expected_exit: int = 0) -> int:
-    cwd = Path.cwd()
-    os.chdir(project)
-    try:
-        rc = cli_main(list(argv))
-    finally:
-        os.chdir(cwd)
+def _run(monkeypatch: pytest.MonkeyPatch, project: Path, *argv: str, expected_exit: int = 0) -> int:
+    # monkeypatch.chdir is per-test scoped and unwinds automatically — safe under
+    # parallel runners (pytest-xdist) where process-global os.chdir would race.
+    monkeypatch.chdir(project)
+    rc = cli_main(list(argv))
     assert rc == expected_exit, f"sqa-tool {' '.join(argv)} exited {rc}"
     return rc
 
 
-def _capture(capsys, project: Path, *argv: str, expected_exit: int = 0) -> str:
+def _capture(
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+    project: Path,
+    *argv: str,
+    expected_exit: int = 0,
+) -> str:
     """Run sqa-tool and return its captured stdout. Drains any prior buffered output first."""
     capsys.readouterr()
-    _run(project, *argv, expected_exit=expected_exit)
+    _run(monkeypatch, project, *argv, expected_exit=expected_exit)
     return capsys.readouterr().out
 
 

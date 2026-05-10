@@ -4,20 +4,20 @@ import json
 import subprocess
 from pathlib import Path
 
-from conftest import _capture, _run
+from conftest import _capture, _commit, _run
 
 from sqa_tool import findings
 
 
-def test_init(project: Path):
-    _run(project, "init")
+def test_init(project: Path, monkeypatch):
+    _run(monkeypatch, project, "init")
     assert (project / ".sqa" / "config.toml").exists()
     assert (project / ".sqa" / "findings").is_dir()
     assert (project / ".sqa" / "file_status.json").exists()
 
 
-def test_init_scaffolds_skills_and_agents(project: Path):
-    _run(project, "init")
+def test_init_scaffolds_skills_and_agents(project: Path, monkeypatch):
+    _run(monkeypatch, project, "init")
     skills_dir = project / ".claude" / "skills"
     agents_dir = project / ".claude" / "agents"
     assert skills_dir.is_dir()
@@ -39,41 +39,41 @@ def test_init_scaffolds_skills_and_agents(project: Path):
     assert (agents_dir / "triage-file-guidelines.md").is_file()
 
 
-def test_init_overwrites_framework_skill_md(project: Path):
+def test_init_overwrites_framework_skill_md(project: Path, monkeypatch):
     """Framework SKILL.md must be overwritten on re-init so users get the
     latest workflow logic."""
     skills_dir = project / ".claude" / "skills" / "sqa-review"
     skills_dir.mkdir(parents=True)
     skill_md = skills_dir / "SKILL.md"
     skill_md.write_text("# stale customization\n")
-    _run(project, "init")
+    _run(monkeypatch, project, "init")
     # Stale content is replaced by the bundled framework.
     assert skill_md.read_text() != "# stale customization\n"
     assert "framework" in skill_md.read_text().lower()
 
 
-def test_init_overwrites_framework_agent_md(project: Path):
+def test_init_overwrites_framework_agent_md(project: Path, monkeypatch):
     """Framework agent <name>.md must be overwritten on re-init."""
     agents_dir = project / ".claude" / "agents"
     agents_dir.mkdir(parents=True)
     agent_md = agents_dir / "review-file.md"
     agent_md.write_text("# stale customization\n")
-    _run(project, "init")
+    _run(monkeypatch, project, "init")
     assert agent_md.read_text() != "# stale customization\n"
 
 
-def test_init_preserves_skill_project_md(project: Path):
+def test_init_preserves_skill_project_md(project: Path, monkeypatch):
     """Project-specific files in skill dirs (e.g., project.md) must NOT
     be overwritten when they already exist."""
     skills_dir = project / ".claude" / "skills" / "sqa-review"
     skills_dir.mkdir(parents=True)
     custom = skills_dir / "project.md"
     custom.write_text("# my customized quality-check command\n")
-    _run(project, "init")
+    _run(monkeypatch, project, "init")
     assert custom.read_text() == "# my customized quality-check command\n"
 
 
-def test_init_preserves_agent_project_files(project: Path):
+def test_init_preserves_agent_project_files(project: Path, monkeypatch):
     """Project-specific agent files (e.g., review-file-prompts.md,
     triage-file-guidelines.md) must NOT be overwritten."""
     agents_dir = project / ".claude" / "agents"
@@ -82,32 +82,32 @@ def test_init_preserves_agent_project_files(project: Path):
     guidelines = agents_dir / "triage-file-guidelines.md"
     prompts.write_text("# my customized review prompts\n")
     guidelines.write_text("# my customized triage guidelines\n")
-    _run(project, "init")
+    _run(monkeypatch, project, "init")
     assert prompts.read_text() == "# my customized review prompts\n"
     assert guidelines.read_text() == "# my customized triage guidelines\n"
 
 
-def test_init_creates_missing_project_files(project: Path):
+def test_init_creates_missing_project_files(project: Path, monkeypatch):
     """When a project file doesn't exist, init creates it from the bundled
     default."""
-    _run(project, "init")
+    _run(monkeypatch, project, "init")
     project_md = project / ".claude" / "skills" / "sqa-review" / "project.md"
     assert project_md.is_file()
     # Default content should reference quality-check.
     assert "Quality-check command" in project_md.read_text()
 
 
-def test_init_is_idempotent_on_re_run(project: Path):
+def test_init_is_idempotent_on_re_run(project: Path, monkeypatch):
     """Re-running init succeeds: framework gets refreshed, project files
     preserved, .sqa/ left untouched."""
-    _run(project, "init")
+    _run(monkeypatch, project, "init")
     # Customize a project file.
     project_md = project / ".claude" / "skills" / "sqa-review" / "project.md"
     project_md.write_text("# user edit\n")
     # Pretend the framework drifted and re-run init.
     skill_md = project / ".claude" / "skills" / "sqa-review" / "SKILL.md"
     skill_md.write_text("# stale\n")
-    rc = _run(project, "init")
+    rc = _run(monkeypatch, project, "init")
     assert rc == 0
     # Framework refreshed.
     assert skill_md.read_text() != "# stale\n"
@@ -117,26 +117,27 @@ def test_init_is_idempotent_on_re_run(project: Path):
     assert (project / ".sqa" / "config.toml").exists()
 
 
-def test_init_refuses_non_git(tmp_path: Path, capsys):
+def test_init_refuses_non_git(tmp_path: Path, capsys, monkeypatch):
     capsys.readouterr()
-    rc = _run(tmp_path, "init", expected_exit=1)
+    rc = _run(monkeypatch, tmp_path, "init", expected_exit=1)
     assert rc == 1
     err = capsys.readouterr().err
     assert "git repository" in err
 
 
-def test_init_refuses_repo_without_commits(tmp_path: Path, capsys):
+def test_init_refuses_repo_without_commits(tmp_path: Path, capsys, monkeypatch):
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     capsys.readouterr()
-    rc = _run(tmp_path, "init", expected_exit=1)
+    rc = _run(monkeypatch, tmp_path, "init", expected_exit=1)
     assert rc == 1
     err = capsys.readouterr().err
     assert "no commits" in err
 
 
-def test_record_and_show_finding(initialized: Path, capsys):
+def test_record_and_show_finding(initialized: Path, capsys, monkeypatch):
     fid = _capture(
         capsys,
+        monkeypatch,
         initialized,
         "record-finding",
         "--message=Use isinstance instead of type()",
@@ -144,7 +145,7 @@ def test_record_and_show_finding(initialized: Path, capsys):
         "--related=src/sample.py",
     ).strip()
     assert findings.is_valid_id(fid)
-    payload = json.loads(_capture(capsys, initialized, "show-finding", fid))
+    payload = json.loads(_capture(capsys, monkeypatch, initialized, "show-finding", fid))
     assert payload["id"] == fid
     assert payload["message"] == "Use isinstance instead of type()"
     assert payload["severity"] == "warning"
@@ -153,9 +154,10 @@ def test_record_and_show_finding(initialized: Path, capsys):
     assert payload["related_files"] == ["src/sample.py"]
 
 
-def test_record_finding_with_anchor_in_sqa_md(initialized: Path, capsys):
+def test_record_finding_with_anchor_in_sqa_md(initialized: Path, capsys, monkeypatch):
     fid = _capture(
         capsys,
+        monkeypatch,
         initialized,
         "record-finding",
         "--message=Module is overcomplicated",
@@ -166,9 +168,11 @@ def test_record_finding_with_anchor_in_sqa_md(initialized: Path, capsys):
     assert f"sqa: {fid}" in md
 
 
-def test_record_finding_anchor_uncommentable_fails(initialized: Path):
+def test_record_finding_anchor_uncommentable_fails(initialized: Path, capsys, monkeypatch):
     (initialized / "data.json").write_text("{}")
+    capsys.readouterr()
     rc = _run(
+        monkeypatch,
         initialized,
         "record-finding",
         "--message=bad",
@@ -176,44 +180,65 @@ def test_record_finding_anchor_uncommentable_fails(initialized: Path):
         expected_exit=1,
     )
     assert rc == 1
+    captured = capsys.readouterr()
+    assert "not commentable" in (captured.err + captured.out)
     # No leftover finding should remain.
     fdir = initialized / ".sqa" / "findings"
     assert list(fdir.iterdir()) == []
 
 
-def test_list_findings_filters(initialized: Path, capsys):
+def test_list_findings_filters(initialized: Path, capsys, monkeypatch):
     # Record three findings with different triage states.
-    a_id = _capture(capsys, initialized, "record-finding", "--message=A", "--severity=info").strip()
-    b_id = _capture(capsys, initialized, "record-finding", "--message=B", "--severity=info").strip()
-    c_id = _capture(capsys, initialized, "record-finding", "--message=C", "--severity=info").strip()
+    a_id = _capture(
+        capsys, monkeypatch, initialized, "record-finding", "--message=A", "--severity=info"
+    ).strip()
+    b_id = _capture(
+        capsys, monkeypatch, initialized, "record-finding", "--message=B", "--severity=info"
+    ).strip()
+    c_id = _capture(
+        capsys, monkeypatch, initialized, "record-finding", "--message=C", "--severity=info"
+    ).strip()
 
-    _run(initialized, "triage", a_id, "auto", "--rationale=easy fix")
-    _run(initialized, "triage", b_id, "ignore", "--rationale=intentional")
+    _run(monkeypatch, initialized, "triage", a_id, "auto", "--rationale=easy fix")
+    _run(monkeypatch, initialized, "triage", b_id, "ignore", "--rationale=intentional")
 
-    all_findings = json.loads(_capture(capsys, initialized, "list-findings"))
+    all_findings = json.loads(_capture(capsys, monkeypatch, initialized, "list-findings"))
     assert len(all_findings) == 3
 
-    auto = json.loads(_capture(capsys, initialized, "list-findings", "--triage=auto"))
+    auto = json.loads(_capture(capsys, monkeypatch, initialized, "list-findings", "--triage=auto"))
     assert len(auto) == 1
     assert auto[0]["id"] == a_id
 
-    untriaged = json.loads(_capture(capsys, initialized, "list-findings", "--triage=untriaged"))
+    untriaged = json.loads(
+        _capture(capsys, monkeypatch, initialized, "list-findings", "--triage=untriaged")
+    )
     assert len(untriaged) == 1
     assert untriaged[0]["id"] == c_id
 
-    assert _capture(capsys, initialized, "list-findings", "--count").strip() == "3"
+    assert _capture(capsys, monkeypatch, initialized, "list-findings", "--count").strip() == "3"
 
-    limited = json.loads(_capture(capsys, initialized, "list-findings", "--limit=2"))
+    limited = json.loads(_capture(capsys, monkeypatch, initialized, "list-findings", "--limit=2"))
     assert len(limited) == 2
 
 
-def test_status(initialized: Path, capsys):
-    fid = _capture(
-        capsys, initialized, "record-finding", "--message=x", "--severity=warning"
-    ).strip()
-    _run(initialized, "triage", fid, "auto", "--rationale=easy")
+def test_negative_limit_rejected(initialized: Path, capsys, monkeypatch):
+    # argparse should reject --limit=-1 (and its needs-review equivalent)
+    # rather than silently end-slicing the result list.
+    import pytest
 
-    s = json.loads(_capture(capsys, initialized, "status"))
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, initialized, "list-findings", "--limit=-1")
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, initialized, "needs-review", "--limit=-1")
+
+
+def test_status(initialized: Path, capsys, monkeypatch):
+    fid = _capture(
+        capsys, monkeypatch, initialized, "record-finding", "--message=x", "--severity=warning"
+    ).strip()
+    _run(monkeypatch, initialized, "triage", fid, "auto", "--rationale=easy")
+
+    s = json.loads(_capture(capsys, monkeypatch, initialized, "status"))
     assert s["total"] == 1
     assert s["by_triage"]["auto"] == 1
     assert s["by_severity"]["warning"] == 1
@@ -224,44 +249,47 @@ def _set_include_globs(project: Path, *patterns: str) -> None:
     cfg = project / ".sqa" / "config.toml"
     text = cfg.read_text()
     new = []
+    replaced = False
     for line in text.splitlines():
         if line.strip().startswith("include ="):
             new.append("include = [" + ", ".join(f'"{p}"' for p in patterns) + "]")
+            replaced = True
         else:
             new.append(line)
+    assert replaced, f"no 'include =' line found in {cfg}"
     cfg.write_text("\n".join(new) + "\n")
 
 
-def test_needs_review_initial_lists_all(initialized: Path, capsys):
+def test_needs_review_initial_lists_all(initialized: Path, capsys, monkeypatch):
     _set_include_globs(initialized, "src/**/*.py")
-    out = _capture(capsys, initialized, "needs-review").strip().splitlines()
+    out = _capture(capsys, monkeypatch, initialized, "needs-review").strip().splitlines()
     assert out == ["src/sample.py"]
 
 
-def test_needs_review_count(initialized: Path, capsys):
+def test_needs_review_count(initialized: Path, capsys, monkeypatch):
     _set_include_globs(initialized, "src/**/*.py")
-    assert _capture(capsys, initialized, "needs-review", "--count").strip() == "1"
+    assert _capture(capsys, monkeypatch, initialized, "needs-review", "--count").strip() == "1"
 
 
-def test_mark_reviewed_then_needs_review_empty(initialized: Path, capsys):
+def test_mark_reviewed_then_needs_review_empty(initialized: Path, capsys, monkeypatch):
     _set_include_globs(initialized, "src/**/*.py")
-    _run(initialized, "mark-reviewed", "src/sample.py")
-    assert _capture(capsys, initialized, "needs-review", "--count").strip() == "0"
+    _run(monkeypatch, initialized, "mark-reviewed", "src/sample.py")
+    assert _capture(capsys, monkeypatch, initialized, "needs-review", "--count").strip() == "0"
 
 
-def test_needs_review_after_edit(initialized: Path, capsys):
+def test_needs_review_after_edit(initialized: Path, capsys, monkeypatch):
     _set_include_globs(initialized, "src/**/*.py")
-    _run(initialized, "mark-reviewed", "src/sample.py")
+    _run(monkeypatch, initialized, "mark-reviewed", "src/sample.py")
     # Edit file
     (initialized / "src" / "sample.py").write_text("def hello(): return 'edited'\n")
-    assert _capture(capsys, initialized, "needs-review").strip() == "src/sample.py"
+    assert _capture(capsys, monkeypatch, initialized, "needs-review").strip() == "src/sample.py"
 
 
-def test_resolve_removes_anchor(initialized: Path, capsys):
-    sub = subprocess.run
+def test_resolve_removes_anchor(initialized: Path, capsys, monkeypatch):
     # Insert an anchor in the source file via record-finding's --anchor flow.
     fid = _capture(
         capsys,
+        monkeypatch,
         initialized,
         "record-finding",
         "--message=fix me",
@@ -269,21 +297,16 @@ def test_resolve_removes_anchor(initialized: Path, capsys):
     ).strip()
     assert f"sqa: {fid}" in (initialized / "src" / "sample.py").read_text()
     # Commit so git tracks the anchor.
-    sub(["git", "add", "."], cwd=initialized, check=True, capture_output=True)
-    sub(
-        ["git", "commit", "-q", "-m", "anchor"],
-        cwd=initialized,
-        check=True,
-        capture_output=True,
-    )
-    _run(initialized, "resolve", fid, "--rationale=fixed it")
+    _commit(initialized, "anchor")
+    _run(monkeypatch, initialized, "resolve", fid, "--rationale=fixed it")
     assert f"sqa: {fid}" not in (initialized / "src" / "sample.py").read_text()
 
 
-def test_findings_for_file_includes_ancestor_scope(initialized: Path, capsys):
-    # Create a file-scope finding directly anchored in src/.sqa.md with related src/sample.py.
+def test_findings_for_file_includes_ancestor_scope(initialized: Path, capsys, monkeypatch):
+    # Create a module-scope (ancestor) finding anchored in src/.sqa.md with related src/sample.py.
     module_id = _capture(
         capsys,
+        monkeypatch,
         initialized,
         "record-finding",
         "--message=Module-level concern",
@@ -293,13 +316,16 @@ def test_findings_for_file_includes_ancestor_scope(initialized: Path, capsys):
     # Create a file-scope finding directly anchored in src/sample.py.
     file_id = _capture(
         capsys,
+        monkeypatch,
         initialized,
         "record-finding",
         "--message=File-level concern",
         "--anchor=src/sample.py",
     ).strip()
 
-    items = json.loads(_capture(capsys, initialized, "findings-for-file", "src/sample.py"))
+    items = json.loads(
+        _capture(capsys, monkeypatch, initialized, "findings-for-file", "src/sample.py")
+    )
     ids = {it["id"] for it in items}
     assert module_id in ids
     assert file_id in ids

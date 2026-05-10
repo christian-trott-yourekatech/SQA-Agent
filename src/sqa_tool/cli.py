@@ -43,6 +43,17 @@ def _project_root_or_die() -> Path:
     return root
 
 
+def _nonneg_int(value: str) -> int:
+    """argparse type for --limit-style flags: accept N >= 0, reject negatives."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {n}")
+    return n
+
+
 def _require_initialized(root: Path) -> None:
     if not paths.sqa_dir(root).is_dir():
         print(
@@ -76,13 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
     lf.add_argument("--triage", choices=["auto", "interactive", "ignore", "untriaged"])
     lf.add_argument("--status", choices=["open", "resolved"])
     lf.add_argument("--count", action="store_true", help="Print just the integer count")
-    lf.add_argument("--limit", type=int, help="Print at most N findings")
+    lf.add_argument("--limit", type=_nonneg_int, help="Print at most N findings")
 
     sub.add_parser("status", help="Counts and breakdowns of findings")
 
     nr = sub.add_parser("needs-review", help="List files whose blob has changed since last review")
     nr.add_argument("--count", action="store_true")
-    nr.add_argument("--limit", type=int)
+    nr.add_argument("--limit", type=_nonneg_int)
 
     mr = sub.add_parser("mark-reviewed", help="Record a file's current blob hash")
     mr.add_argument("path")

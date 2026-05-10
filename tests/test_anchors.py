@@ -96,6 +96,35 @@ def test_insert_anchor_python_with_shebang(tmp_path):
     assert text_after.startswith("#!/usr/bin/env python\n# sqa: ABCDE\n")
 
 
+def test_insert_anchor_markdown_front_matter(tmp_path):
+    # Anchor must be inserted *after* YAML front matter on a markdown file,
+    # not before — front matter has to stay as the first content of the file.
+    path = tmp_path / "x.md"
+    path.write_text("---\ntitle: Hello\n---\n# Body\n")
+    anchors.insert_anchor(path, "ABCDE")
+    text = path.read_text()
+    assert text.startswith("---\ntitle: Hello\n---\n<!-- sqa: ABCDE -->\n")
+
+
+def test_insert_anchor_html_doctype(tmp_path):
+    # Anchor must come after <!DOCTYPE html>, not before — the doctype must
+    # be the first content of an HTML file.
+    path = tmp_path / "x.html"
+    path.write_text("<!DOCTYPE html>\n<html><body></body></html>\n")
+    anchors.insert_anchor(path, "ABCDE")
+    text = path.read_text()
+    assert text.startswith("<!DOCTYPE html>\n<!-- sqa: ABCDE -->\n")
+
+
+def test_insert_anchor_xml_declaration(tmp_path):
+    # XML declaration must remain on line 1; anchor goes after.
+    path = tmp_path / "x.xml"
+    path.write_text('<?xml version="1.0"?>\n<root/>\n')
+    anchors.insert_anchor(path, "ABCDE")
+    text = path.read_text()
+    assert text.startswith('<?xml version="1.0"?>\n<!-- sqa: ABCDE -->\n')
+
+
 def test_insert_anchor_un_commentable_raises(tmp_path):
     path = tmp_path / "data.json"
     path.write_text("{}")
@@ -197,6 +226,27 @@ def test_remove_anchor_drops_indented_comment_only_line(tmp_path):
     path.write_text("def f():\n    # sqa: ABCDE\n    return 1\n")
     assert anchors.remove_anchor(path, "ABCDE") is True
     assert path.read_text() == "def f():\n    return 1\n"
+
+
+def test_remove_anchor_skips_python_string_literal(tmp_path):
+    # An anchor-looking ID inside a string literal must not be treated as a
+    # real anchor — removing finding ABCDE should not corrupt this fixture
+    # line, because the only "anchor" is the real one on the next line.
+    path = tmp_path / "x.py"
+    src = 'parse_ids("# sqa: ABCDE")\n# sqa: ABCDE\n'
+    path.write_text(src)
+    assert anchors.remove_anchor(path, "ABCDE") is True
+    assert path.read_text() == 'parse_ids("# sqa: ABCDE")\n'
+
+
+def test_remove_anchor_skips_markdown_fenced_code(tmp_path):
+    # An anchor inside a fenced code block in markdown is documentation,
+    # not a real anchor; remove_anchor must leave it intact.
+    path = tmp_path / "x.md"
+    src = "<!-- sqa: ABCDE -->\n```\n# sqa: ABCDE\n```\n"
+    path.write_text(src)
+    assert anchors.remove_anchor(path, "ABCDE") is True
+    assert path.read_text() == "```\n# sqa: ABCDE\n```\n"
 
 
 def test_find_anchors_in_file(tmp_path):

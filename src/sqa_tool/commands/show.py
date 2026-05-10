@@ -15,7 +15,7 @@ def show(project_root: Path, args: argparse.Namespace) -> int:
     try:
         f = findings.load_finding(project_root, args.id)
     except (FileNotFoundError, ValueError) as e:
-        print(f"error: {e}", flush=True)
+        print(f"error: {e}", file=sys.stderr, flush=True)
         return 1
     payload = {"id": args.id, **asdict(f)}
     print(json.dumps(payload, indent=2))
@@ -57,15 +57,15 @@ def _load_all(
 
 
 def list_(project_root: Path, args: argparse.Namespace) -> int:
-    items, _ = _load_all(project_root)
+    items, load_errors = _load_all(project_root)
     items = _filter(items, args.triage, args.status)
     if args.count:
         print(len(items))
-        return 0
+        return 1 if load_errors > 0 else 0
     if args.limit is not None:
         items = items[: args.limit]
     print(json.dumps([{"id": fid, **asdict(f)} for fid, f in items], indent=2))
-    return 0
+    return 1 if load_errors > 0 else 0
 
 
 def status(project_root: Path, args: argparse.Namespace) -> int:
@@ -93,7 +93,10 @@ def status(project_root: Path, args: argparse.Namespace) -> int:
         needs_review_count = None
 
     payload = {
-        "total": len(items) + load_errors,
+        # `total` is the count of successfully-loaded findings, so it always
+        # equals sum(by_triage) == sum(by_severity) == sum(by_status). Items
+        # that failed to load are surfaced separately as `load_errors`.
+        "total": len(items),
         "by_triage": dict(by_triage),
         "by_severity": dict(by_severity),
         "by_status": dict(by_status),

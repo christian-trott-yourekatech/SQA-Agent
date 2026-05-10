@@ -49,9 +49,14 @@ def has_commits(project_root: Path) -> bool:
 
 
 def ls_files(project_root: Path) -> list[str]:
-    """Return project-relative paths of all git-tracked files in the project root."""
-    out = _git(project_root, "ls-files")
-    return [line for line in out.splitlines() if line]
+    """Return project-relative paths of all git-tracked files in the project root.
+
+    Uses NUL-delimited output (`-z`) so paths containing whitespace, embedded
+    quotes, or non-UTF-8 bytes are returned verbatim rather than in git's
+    C-style quoted form.
+    """
+    out = _git(project_root, "ls-files", "-z")
+    return [p for p in out.split("\0") if p]
 
 
 def git_rm(project_root: Path, rel_path: str) -> None:
@@ -88,6 +93,12 @@ def hash_object(project_root: Path, rel_paths: list[str]) -> dict[str, str]:
     existing = [p for p in rel_paths if (project_root / p).exists()]
     if not existing:
         return {}
+    bad = [p for p in existing if "\n" in p]
+    if bad:
+        raise GitError(
+            f"hash_object cannot handle paths containing newlines: {bad!r}. "
+            "git hash-object --stdin-paths is newline-delimited and has no -z variant."
+        )
     stdin = "\n".join(str(project_root / p) for p in existing)
     out = _git(project_root, "hash-object", "--stdin-paths", input_text=stdin)
     hashes = out.splitlines()
@@ -106,9 +117,11 @@ def diff_blob_to_file(project_root: Path, blob: str, rel_path: str) -> str:
     if not blob and not file_exists:
         return ""
     if not blob:
-        with open(file_path, encoding="utf-8") as f:
-            content = f.read()
-        return _format_synthetic_diff(rel_path, "", content)
+        raw = file_path.read_bytes()
+        if b"\x00" in raw:
+            # Match git's behavior on the prior-blob path for binary content.
+            return f"Binary files /dev/null and b/{rel_path} differ\n"
+        return _format_synthetic_diff(rel_path, "", raw.decode("utf-8", errors="replace"))
     if not file_exists:
         old = _git(project_root, "show", blob)
         return _format_synthetic_diff(rel_path, old, "")
