@@ -98,4 +98,4 @@ def status(project_root: Path, args: argparse.Namespace) -> int:
         "needs_review": needs_review_count,
     }
     print(json.dumps(payload, indent=2))
-    return 0
+    return 1 if load_errors > 0 else 0

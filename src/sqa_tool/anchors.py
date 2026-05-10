@@ -6,6 +6,8 @@ import os
 import re
 import token
 import tokenize
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqa_tool.findings import ID_LENGTH, is_valid_id
@@ -57,6 +59,48 @@ _BLOCK_DELIMS: dict[str, tuple[str, str]] = {
 
 # Files we know we can't comment in (source-of-truth for "un-commentable").
 _UNCOMMENTABLE_EXTS = {"json", "csv", "tsv"}
+
+
+@contextmanager
+def _locked(path: Path, flags: int, mode: int = 0o644) -> Iterator[int]:
+    """Open `path` with `flags` and hold an exclusive `fcntl.flock` for the block.
+
+    Centralises the os.open + flock LOCK_EX + finally LOCK_UN/close ceremony
+    used by `insert_anchor` and `remove_anchor` so concurrent callers cooperate
+    on the same inode without each site re-implementing the locking dance.
+    Yields the open file descriptor.
+
+    Threat model: the lock coordinates concurrent sqa-tool callers on the
+    same inode. Callsites read/write via `path.read_text()` /
+    `path.write_text()` (separate fds), which is correct *for cooperating
+    callers* — they all use this lock and none atomic-rename. An external
+    editor that uses atomic-rename saves (vim default, VS Code, etc.) can
+    bypass the lock by replacing the inode under us, in which case our
+    write may collide with the editor's save. This race is accepted: the
+    window is milliseconds, requires concurrent human+tool operation, and
+    flock is fundamentally incompatible with atomic-rename — reading
+    through the fd would just trade silent overwrite for silent data loss
+    (writes going to the orphaned inode).
+    """
+    fd = os.open(path, flags, mode)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield fd
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _blank_range(out_chars: list[str], start: int, end: int) -> None:
+    """Blank non-newline characters in `out_chars[start:end]` to spaces.
+
+    Centralises the offset-preservation invariant used by the strip helpers:
+    contents are masked but newlines and overall character positions are kept
+    so per-line matches index identically into the original text.
+    """
+    for i in range(start, min(end, len(out_chars))):
+        if out_chars[i] != "\n":
+            out_chars[i] = " "
 
 
 def _ext(path: Path) -> str:
@@ -131,9 +175,7 @@ def insert_anchor(path: Path, finding_id: str) -> None:
 
     comment = comment_for(path, f"sqa: {finding_id}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    with _locked(path, os.O_RDWR | os.O_CREAT):
         text = path.read_text()
         if not text:
             path.write_text(comment + "\n")
@@ -149,9 +191,6 @@ def insert_anchor(path: Path, finding_id: str) -> None:
         insert_at = _prepend_skip(path, lines)
         new_text = "".join(lines[:insert_at]) + comment + "\n" + "".join(lines[insert_at:])
         path.write_text(new_text)
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
 
 
 def _prepend_skip(path: Path, lines: list[str]) -> int:
@@ -237,7 +276,9 @@ def _comment_extent(
 
     # Heuristic fallback when the file's comment style isn't known: try
     # block-comment pairs first (they're unambiguous), then line prefixes.
-    for op, cl in (("<!--", "-->"), ("/*", "*/")):
+    # Iterate over `_BLOCK_DELIMS` (the SSOT) so newly-added block-comment
+    # languages are picked up automatically.
+    for op, cl in set(_BLOCK_DELIMS.values()):
         op_pos = line.rfind(op, 0, anchor_start)
         cl_pos = line.find(cl, anchor_start)
         if op_pos != -1 and cl_pos != -1:
@@ -270,15 +311,10 @@ def remove_anchor(path: Path, finding_id: str) -> bool:
     if not path.exists():
         return False
     try:
-        fd = os.open(path, os.O_RDWR)
+        with _locked(path, os.O_RDWR):
+            return _remove_anchor_locked(path, finding_id)
     except FileNotFoundError:
         return False
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return _remove_anchor_locked(path, finding_id)
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
 
 
 def _remove_anchor_locked(path: Path, finding_id: str) -> bool:
@@ -413,9 +449,7 @@ def _strip_python_strings(text: str) -> str:
         end = to_offset(tok.end[0], tok.end[1])
         # Blank out non-newline characters inside the string range so that
         # any anchor-looking substring is hidden but offsets/lines stay aligned.
-        for i in range(start, min(end, len(out_chars))):
-            if out_chars[i] != "\n":
-                out_chars[i] = " "
+        _blank_range(out_chars, start, end)
     return "".join(out_chars)
 
 
@@ -426,15 +460,8 @@ def _strip_markdown_inline_code(text: str) -> str:
     """Blank out the contents of inline-code spans (backtick-delimited)."""
     out_chars = list(text)
 
-    def _blank(match: re.Match[str]) -> None:
-        body_start = match.start("body")
-        body_end = match.end("body")
-        for j in range(body_start, body_end):
-            if out_chars[j] != "\n":
-                out_chars[j] = " "
-
     for m in _INLINE_CODE_RE.finditer(text):
-        _blank(m)
+        _blank_range(out_chars, m.start("body"), m.end("body"))
     return "".join(out_chars)
 
 
@@ -484,9 +511,7 @@ def _strip_markdown_code_blocks(text: str) -> str:
                 fence_marker = None
             else:
                 # Blank out non-newline chars inside the fenced block.
-                for j in range(pos, pos + len(line)):
-                    if out_chars[j] != "\n":
-                        out_chars[j] = " "
+                _blank_range(out_chars, pos, pos + len(line))
         pos += len(line)
     return "".join(out_chars)
 

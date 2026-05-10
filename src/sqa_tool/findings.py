@@ -3,7 +3,7 @@
 import json
 import re
 import secrets
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -91,13 +91,18 @@ def load_finding(project_root: Path, finding_id: str) -> Finding:
 
 
 def _finding_from_dict(data: dict) -> Finding:
-    finding = Finding(
-        message=data["message"],
-        severity=data.get("severity", "info"),
-        triage=data.get("triage"),
-        rationale=data.get("rationale", ""),
-        related_files=list(data.get("related_files", [])),
-    )
+    """Construct a Finding from a JSON dict.
+
+    Defaults for optional fields come from the Finding dataclass itself —
+    any field absent from `data` is left at its dataclass default rather
+    than re-stating the default here, so a default change in one place
+    can't silently diverge from the loader.
+    """
+    optional_names = {f.name for f in fields(Finding)} - {"message"}
+    overrides = {k: data[k] for k in optional_names if k in data}
+    if "related_files" in overrides:
+        overrides["related_files"] = list(overrides["related_files"])
+    finding = Finding(message=data["message"], **overrides)
     _validate(finding)
     return finding
 

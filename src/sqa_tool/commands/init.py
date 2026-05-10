@@ -198,17 +198,22 @@ def run(project_root: Path) -> int:
             "loss of git-based history and merge-friendly storage.",
             flush=True,
         )
-    print("", flush=True)
-    print(
-        "Project-specific configuration (quality-check command, review prompts,\n"
-        "triage guidelines) lives in:\n"
-        "  .claude/skills/sqa-review/project.md\n"
-        "  .claude/skills/sqa-resolve/project.md\n"
-        "  .claude/agents/review-file-prompts.md\n"
-        "  .claude/agents/triage-file-guidelines.md\n"
-        "Edit those to tailor the system to your project. They are preserved\n"
-        "across `sqa-tool init` upgrades; the framework files (SKILL.md,\n"
-        "<agent>.md) are overwritten so you get the latest workflow logic.",
-        flush=True,
+    project_paths = sorted(
+        str(e.dst.relative_to(project_root)) for e in entries if not e.is_framework
     )
+    if project_paths:
+        print("", flush=True)
+        print(
+            "Project-specific configuration (quality-check command, review prompts,\n"
+            "triage guidelines) lives in:",
+            flush=True,
+        )
+        for p in project_paths:
+            print(f"  {p}", flush=True)
+        print(
+            "Edit those to tailor the system to your project. They are preserved\n"
+            "across `sqa-tool init` upgrades; the framework files (SKILL.md,\n"
+            "<agent>.md) are overwritten so you get the latest workflow logic.",
+            flush=True,
+        )
     return 0
