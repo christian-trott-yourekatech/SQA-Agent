@@ -26,13 +26,30 @@ Examples of good reasons to ignore:
 
 **"It's small," "it's not worth the effort," or "I'll do it later" are not good reasons** to ignore. Small fixes are cheap and they compound into a cleaner codebase over time. If you find yourself reaching for ignore on those grounds, it should be auto instead.
 
-### Persistent findings replace defensive comments
+### Where does the rationale live: comment or persisted finding?
 
-Unlike a stateless reviewer, v2 findings persist across runs with their rationale. An `ignore` with a clear rationale is durable — the reviewer sees prior findings (including ignored ones) on every review and respects them. The rationale *is* the durable annotation; you do **not** need to also add a code comment merely to "prevent re-flagging."
+When a finding turns out not to need a code change but you *do* want to record "we considered this and here's why we're leaving it," there are two durable places the rationale can live:
 
-Reach for an `auto`-with-add-a-comment only when the explanation belongs in the code itself — i.e., it would genuinely help a human reading the code, not just future reviewers. If the rationale is purely about reviewer-shielding, an ignore is the right move.
+- **Inline comment in the code** — triage `auto` with the fix being "add a clarifying comment," then `resolve` (which deletes the finding JSON). Rationale lives next to the code it explains.
+- **Persisted ignore-rationale** — triage `ignore` with the explanation in the rationale field. The finding stays in `.sqa/findings/<id>.json` and surfaces in every future `findings-for-file` scope walk.
 
-For minor nit-picks or debatable items, the Clean Code Bias still favors just fixing it: small fixes compound into a cleaner codebase, and one-time application is usually cheaper than ignore-with-rationale (which still costs a triage cycle to write).
+Both successfully prevent re-flagging on subsequent review passes (a reviewer reading the source sees the comment; a reviewer loading prior scope findings sees the ignore). The decision is about **where the rationale is most useful**, not which mechanism is more durable.
+
+**Prefer an inline comment + resolve when:**
+- The rationale is tied to specific lines of code — function-level mechanism, a particular except clause, a magic constant's origin, a load-bearing ordering.
+- A reader looking at the code in isolation might independently question it ("why does this only catch one exception type?") and the comment answers them on the spot, with no indirection.
+- The comment text is short — a sentence or two. Long rationales become intrusive in source.
+- A future editor might be tempted to "clean up" the apparent oddity, and a comment is the cheapest way to flag intent.
+
+**Prefer ignore (keep the finding) when:**
+- The rationale is policy- or module-level — cross-cutting decisions that don't belong on any single line ("we don't validate X across this module because…").
+- The explanation would clutter the code: long enough to be intrusive, or it'd repeat itself in multiple places.
+- The audience is primarily *reviewers* (human or LLM doing future review passes), not editors of the code. The persisted finding surfaces during scope walks; that's its native habitat.
+- The finding is "we considered this concern, decided to live with it" — exactly the kind of accumulated review state the persisted-findings system exists for.
+
+**Default for minor nit-picks** — Clean Code Bias still wins. If the change is small and zero-risk, just `auto` it and move on. The dichotomy above is for findings where action is genuinely *not* the right call; don't use it to dress up "I don't feel like fixing this."
+
+**Anti-pattern**: triaging `ignore` AND adding an inline comment. That's belt and suspenders — pick one. If the rationale is worth committing to source, resolve the finding (the comment IS the durable record). If the rationale is reviewer-state-only, the ignore-finding alone is enough.
 
 ### Do the investigation, don't defer it
 
@@ -125,7 +142,7 @@ Categories that look ignorable but are usually auto:
 ### Judgment calls
 
 - **"Too minor / not worth the churn"** — apply Clean Code Bias. If the fix is zero-risk and makes the code better, it's auto. Ignore only when the change is purely cosmetic with no clarity benefit, or the reviewer's alternative is not actually better.
-- **Intentional design choices** — `ignore` with a rationale capturing the intent. The persistent ignore-rationale serves the role a defensive code comment used to. Only mark `auto`-with-add-a-comment when the explanation would genuinely help a human reading the code (not just future reviewers). Mark `interactive` only when the choice is genuinely questionable and worth discussing.
+- **Intentional design choices** — capture the intent durably. Whether that lives in an inline comment (triage `auto`, then resolve) or a persisted ignore-rationale depends on the audience and reach of the explanation; see "Where does the rationale live: comment or persisted finding?" above. Mark `interactive` only when the choice is genuinely questionable and worth discussing.
 - **Stale documentation/comments** — `auto` when the correction is obvious; `interactive` when the doc actively contradicts the code in a way that could mislead a future maintainer.
 
 ## Tiebreakers

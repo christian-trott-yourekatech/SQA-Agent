@@ -27,7 +27,7 @@ def test_resolve_unknown_id_errors(initialized: Path, capsys, monkeypatch):
     capsys.readouterr()
     _run(monkeypatch, initialized, "resolve", "NOPE0", "--rationale=irrelevant", expected_exit=1)
     out = capsys.readouterr().out
-    assert out.startswith("error:") or "error:" in out
+    assert "error:" in out
 
 
 def test_resolve_echoes_rationale(initialized: Path, capsys, monkeypatch):

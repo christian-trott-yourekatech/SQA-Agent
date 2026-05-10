@@ -34,6 +34,13 @@ def _candidate_files(project_root: Path) -> list[str]:
 
 
 def changed_files(project_root: Path) -> list[str]:
+    """Return tracked, included candidate files whose current git blob hash
+    differs from the baseline recorded in file_status.
+
+    Deleted files are not reported here; orphan handling (files that vanished
+    from the working tree or fell out of include/exclude scope) is delegated
+    to the orphans command.
+    """
     candidates = _candidate_files(project_root)
     if not candidates:
         return []

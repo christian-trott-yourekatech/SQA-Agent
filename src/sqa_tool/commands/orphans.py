@@ -14,6 +14,11 @@ def _collect_anchored_ids(project_root: Path) -> dict[str, list[str]]:
     fenced code blocks — those are test fixtures and documentation
     examples, not real anchors.
     """
+    # OSError is suppressed here (transient unreadable file → skip and
+    # try again next scan; orphan reporting is read-only and self-healing).
+    # Contrast with triage._find_files_with_anchor, which intentionally lets
+    # OSError propagate because resolve() is destructive and must not split
+    # its action.
     out: dict[str, list[str]] = {}
     for rel, abs_path in git_ops.walk_tracked_files(project_root):
         try:

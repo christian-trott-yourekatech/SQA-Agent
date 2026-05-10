@@ -64,10 +64,10 @@ def _bundled_claude_entries(
 
     skills_src = _bundled_dir("skills")
     skills_dst_root = project_root / ".claude" / "skills"
-    for skill_dir in skills_src.iterdir():
+    for skill_dir in sorted(skills_src.iterdir()):
         if not skill_dir.is_dir():
             continue
-        for src_file in skill_dir.iterdir():
+        for src_file in sorted(skill_dir.iterdir()):
             if not (src_file.is_file() and src_file.suffix == ".md"):
                 continue
             dst_file = skills_dst_root / skill_dir.name / src_file.name
@@ -75,7 +75,7 @@ def _bundled_claude_entries(
 
     agents_src = _bundled_dir("agents")
     agents_dst_root = project_root / ".claude" / "agents"
-    for src_file in agents_src.iterdir():
+    for src_file in sorted(agents_src.iterdir()):
         if not (src_file.is_file() and src_file.suffix == ".md"):
             continue
         dst_file = agents_dst_root / src_file.name

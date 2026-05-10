@@ -1,0 +1,10 @@
+{
+  "message": "Three near-identical 'corrupt JSON' tests (test_load_raises_on_corrupt_json, test_update_raises_on_corrupt_json, test_remove_raises_on_corrupt_json) differ only in the file_status function called. Could be a single pytest.mark.parametrize over the three operations. Minor \u2014 current form is readable; flagging only as a tidy-up if the file grows further variants.",
+  "severity": "info",
+  "triage": "ignore",
+  "status": "open",
+  "rationale": "The finding itself acknowledges the current form is readable and only flags this as a speculative tidy-up if more variants are added. Explicit tests are arguably clearer than a parametrize, and there are only three. Below threshold for action.",
+  "related_files": [
+    "tests/test_file_status.py"
+  ]
+}

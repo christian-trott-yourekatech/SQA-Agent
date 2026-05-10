@@ -72,6 +72,17 @@ def test_load_on_missing_file_returns_empty(initialized: Path):
     assert file_status.load(initialized) == {}
 
 
+def test_load_on_zero_byte_file_returns_empty(initialized: Path):
+    """Guards the empty-string branch in load() that handles a LOCK_SH reader
+    racing a first-time writer between O_CREAT and the initial _write_locked.
+    """
+    status_path = paths.file_status_path(initialized)
+    status_path.write_text("")
+    assert status_path.stat().st_size == 0
+    assert file_status.load(initialized) == {}
+
+
+# sqa: N2QTH
 def test_load_raises_on_corrupt_json(initialized: Path):
     status_path = paths.file_status_path(initialized)
     status_path.write_text("{not valid json")

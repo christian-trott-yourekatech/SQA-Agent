@@ -54,7 +54,7 @@ def findings_for_file(project_root: Path, rel_file: str) -> list[tuple[str, find
 
     file_path = project_root / rel_file
     if file_path.exists():
-        for fid in anchors.find_anchors_in_file(file_path):
+        for fid in anchors.find_anchors_for_orphan_scan(file_path):
             if fid in seen:
                 continue
             seen.add(fid)
@@ -65,7 +65,7 @@ def findings_for_file(project_root: Path, rel_file: str) -> list[tuple[str, find
                 continue
 
     for scope_file in _scope_files_for(project_root, rel_file):
-        for fid in anchors.find_anchors_in_file(scope_file):
+        for fid in anchors.find_anchors_for_orphan_scan(scope_file):
             if fid in seen:
                 continue
             try:

@@ -8,9 +8,23 @@ tools: Read, Edit, Bash, Grep
 
 You are cleaning up the non-deterministic orphans reported by `sqa-tool orphans`.
 
+## Source of truth
+
+`sqa-tool orphans` is the **only** authoritative source for orphans. It uses a string-literal-aware scanner that ignores anchor-format text inside Python docstrings, markdown fenced/inline code, and other documentation contexts where literal `sqa: <id>` is just an example. **Never act on orphan signals from anywhere else** — not from your own `grep`, not from a `Read` of the file, not from a parent skill's commentary. If the parent dispatched you with a description like "ABCDE looks orphaned in foo.py", verify it against `sqa-tool orphans` output before doing anything. If the tool doesn't flag it, the parent was wrong; report back and exit.
+
+## Never rewrite anchor-format text
+
+If a file has `sqa: <id>` text that you believe shouldn't be a real anchor (e.g. inside a docstring, test fixture, or doc example), the **wrong** fix is to mutate the literal text — replacing `sqa:` with `sqa<colon>`, escaping the colon, etc. The right fixes, in order of preference, are:
+
+1. **Trust the scanner.** If the text is inside a Python string literal or markdown fenced/inline code, `sqa-tool orphans` already ignores it. There's nothing to fix.
+2. **Delete the anchor** (`Edit` to remove the comment) if the literal text is in a regular comment and is genuinely a stale anchor with no JSON.
+3. **Use a non-conforming placeholder** (e.g. `sqa: <id>` with angle brackets, since `<` isn't in the base32 alphabet) only if you're editing example text that needs to read like an anchor for documentation purposes but must not match `ANCHOR_RE`.
+
+Never invent placeholder syntax of your own (`<colon>`, escapes, zero-width chars). It corrupts documentation, accumulates self-referential explanations, and the next reader has no idea why the literal looks broken.
+
 ## Workflow
 
-1. **Re-run `sqa-tool orphans`** to get a fresh report. The `auto_fixed` portion has already happened (deterministic). Focus on the `reported.*` lists.
+1. **Re-run `sqa-tool orphans`** to get a fresh report. The `auto_fixed` portion has already happened (deterministic). Focus on the `reported.*` lists. **If every list is empty, you're done — do not look for orphans elsewhere.**
 
 2. **For each `findings_without_anchors` entry** (a finding JSON exists but no anchor anywhere):
    - Run `sqa-tool show-finding <id>` to see the message, severity, and `related_files`.

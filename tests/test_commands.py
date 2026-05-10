@@ -9,6 +9,33 @@ from conftest import _capture, _commit, _run
 from sqa_tool import findings
 
 
+def test_framework_agent_stems_covers_all_framework_files():
+    """Every bundled `agents/*.md` must be classifiable: either its stem is in
+    `_FRAMEWORK_AGENT_STEMS`, or its stem ends in a project-file suffix
+    (`-prompts`, `-guidelines`). A new framework agent added without updating
+    the set would silently be treated as project-specific — preserved across
+    `sqa-tool init` upgrades and never refreshed. This test makes that loud.
+    """
+    from sqa_tool.commands.init import _FRAMEWORK_AGENT_STEMS, _bundled_dir
+
+    agents_dir = _bundled_dir("agents")
+    project_suffixes = ("-prompts", "-guidelines")
+    unclassified = []
+    for f in sorted(agents_dir.iterdir()):
+        if not (f.is_file() and f.suffix == ".md"):
+            continue
+        stem = f.stem
+        if stem.endswith(project_suffixes):
+            continue
+        if stem not in _FRAMEWORK_AGENT_STEMS:
+            unclassified.append(f.name)
+    assert not unclassified, (
+        f"Bundled agent file(s) {unclassified} are neither in "
+        f"_FRAMEWORK_AGENT_STEMS nor end in {project_suffixes}. "
+        "Add the stem to the set, or rename to a project-file suffix."
+    )
+
+
 def test_init(project: Path, monkeypatch):
     _run(monkeypatch, project, "init")
     assert (project / ".sqa" / "config.toml").exists()

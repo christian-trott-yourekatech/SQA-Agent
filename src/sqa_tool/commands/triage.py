@@ -7,6 +7,11 @@ from sqa_tool import anchors, findings, git_ops
 
 
 def _find_files_with_anchor(project_root: Path, finding_id: str) -> list[Path]:
+    # OSError is intentionally NOT caught here. resolve() is destructive
+    # (strips anchors then deletes the finding JSON), so silently skipping an
+    # unreadable file would split the action — leaving an orphan anchor with
+    # no matching JSON and no warning. orphans._collect_anchored_ids does
+    # suppress OSError because that path is read-only and self-healing.
     out = []
     for _rel, path in git_ops.walk_tracked_files(project_root):
         try:

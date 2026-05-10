@@ -123,8 +123,23 @@ def diff_blob_to_file(project_root: Path, blob: str, rel_path: str) -> str:
             return f"Binary files /dev/null and b/{rel_path} differ\n"
         return _format_synthetic_diff(rel_path, "", raw.decode("utf-8", errors="replace"))
     if not file_exists:
-        old = _git(project_root, "show", blob)
-        return _format_synthetic_diff(rel_path, old, "")
+        try:
+            raw = subprocess.run(
+                ["git", "show", blob],
+                cwd=project_root,
+                capture_output=True,
+                check=True,
+            ).stdout
+        except FileNotFoundError as e:
+            raise GitError("git executable not found in PATH") from e
+        except subprocess.CalledProcessError as e:
+            raise GitError(
+                f"git show {blob} failed (exit {e.returncode}): "
+                f"{e.stderr.decode('utf-8', errors='replace').strip()}"
+            ) from e
+        if b"\x00" in raw:
+            return f"Binary files a/{rel_path} and /dev/null differ\n"
+        return _format_synthetic_diff(rel_path, raw.decode("utf-8", errors="replace"), "")
     return _git(project_root, "diff", blob, "--", rel_path)
 
 

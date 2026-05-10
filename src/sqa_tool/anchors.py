@@ -292,17 +292,11 @@ def _remove_anchor_locked(path: Path, finding_id: str) -> bool:
 
     # Match against a "scan view" that blanks out content inside Python
     # string literals and markdown code spans/fences, so an anchor-looking
-    # ID inside e.g. `parse_ids("# sqa: ABCDE")` in a fixture isn't matched
+    # ID inside e.g. `parse_ids("# sqa: <id>")` in a fixture isn't matched
     # and the surrounding line corrupted. The strip helpers preserve byte
     # offsets and newlines, so per-line matches index identically into the
     # original text used for the rewrite.
-    suffix = path.suffix.lower()
-    scan_text = text
-    if suffix == ".py":
-        scan_text = _strip_python_strings(scan_text)
-    elif suffix in (".md", ".markdown"):
-        scan_text = _strip_markdown_code_blocks(scan_text)
-        scan_text = _strip_markdown_inline_code(scan_text)
+    scan_text = _scan_view(path, text)
 
     new_lines: list[str] = []
     changed = False
@@ -357,6 +351,22 @@ def find_anchors_in_file(path: Path) -> list[str]:
     return parse_ids(path.read_text())
 
 
+def _scan_view(path: Path, text: str) -> str:
+    """Return `text` with constructs that may look like anchors but aren't masked.
+
+    For Python sources, string-literal contents are blanked. For markdown,
+    fenced code blocks and inline code spans are blanked. Strip helpers
+    preserve byte offsets and newlines so per-line matches index identically
+    into the original text. Other extensions return `text` unchanged.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        return _strip_python_strings(text)
+    if suffix in (".md", ".markdown"):
+        return _strip_markdown_inline_code(_strip_markdown_code_blocks(text))
+    return text
+
+
 def _strip_python_strings(text: str) -> str:
     """Replace the contents of Python string literals with blanks.
 
@@ -407,9 +417,6 @@ def _strip_python_strings(text: str) -> str:
             if out_chars[i] != "\n":
                 out_chars[i] = " "
     return "".join(out_chars)
-
-
-_FENCE_RE = re.compile(r"^(\s*)(`{3,}|~{3,})", re.MULTILINE)
 
 
 _INLINE_CODE_RE = re.compile(r"(?P<ticks>`+)(?P<body>.+?)(?P=ticks)")
@@ -498,11 +505,4 @@ def find_anchors_for_orphan_scan(path: Path) -> list[str]:
     """
     if not path.exists():
         return []
-    text = path.read_text()
-    suffix = path.suffix.lower()
-    if suffix == ".py":
-        text = _strip_python_strings(text)
-    elif suffix in (".md", ".markdown"):
-        text = _strip_markdown_code_blocks(text)
-        text = _strip_markdown_inline_code(text)
-    return parse_ids(text)
+    return parse_ids(_scan_view(path, path.read_text()))
