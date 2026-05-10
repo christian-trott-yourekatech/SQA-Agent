@@ -1,6 +1,7 @@
 """Finding data model + JSON I/O + ID allocation."""
 
 import json
+import os
 import re
 import secrets
 from dataclasses import asdict, dataclass, field, fields
@@ -66,7 +67,10 @@ def save_finding(project_root: Path, finding_id: str, finding: Finding) -> None:
     _validate(finding)
     path = paths.finding_path(project_root, finding_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(finding), indent=2) + "\n")
+    payload = json.dumps(asdict(finding), indent=2) + "\n"
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(payload)
+    os.replace(tmp_path, path)
 
 
 def load_finding(project_root: Path, finding_id: str) -> Finding:
@@ -106,8 +110,16 @@ def _finding_from_dict(data: dict) -> Finding:
         rf = overrides["related_files"]
         if not isinstance(rf, list):
             raise ValueError(f"related_files must be a list, got {type(rf).__name__}")
+        for i, item in enumerate(rf):
+            if not isinstance(item, str):
+                raise ValueError(f"related_files[{i}] must be a string, got {type(item).__name__}")
         overrides["related_files"] = list(rf)
-    finding = Finding(message=data["message"], **overrides)
+    message = data["message"]
+    if not isinstance(message, str):
+        raise ValueError(f"message must be a string, got {type(message).__name__}")
+    if "rationale" in overrides and not isinstance(overrides["rationale"], str):
+        raise ValueError(f"rationale must be a string, got {type(overrides['rationale']).__name__}")
+    finding = Finding(message=message, **overrides)
     _validate(finding)
     return finding
 
