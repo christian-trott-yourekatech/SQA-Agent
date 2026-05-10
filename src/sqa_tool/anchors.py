@@ -293,7 +293,7 @@ def _remove_anchor_locked(path: Path, finding_id: str) -> bool:
     # Match against a "scan view" that blanks out content inside Python
     # string literals and markdown code spans/fences, so an anchor-looking
     # ID inside e.g. `parse_ids("# sqa: <id>")` in a fixture isn't matched
-    # and the surrounding line corrupted. The strip helpers preserve byte
+    # and the surrounding line corrupted. The strip helpers preserve character
     # offsets and newlines, so per-line matches index identically into the
     # original text used for the rewrite.
     scan_text = _scan_view(path, text)
@@ -356,7 +356,7 @@ def _scan_view(path: Path, text: str) -> str:
 
     For Python sources, string-literal contents are blanked. For markdown,
     fenced code blocks and inline code spans are blanked. Strip helpers
-    preserve byte offsets and newlines so per-line matches index identically
+    preserve character offsets and newlines so per-line matches index identically
     into the original text. Other extensions return `text` unchanged.
     """
     suffix = path.suffix.lower()
@@ -373,7 +373,7 @@ def _strip_python_strings(text: str) -> str:
     Used so that anchor-looking text inside a string (e.g. test fixtures
     like `parse_ids("# sqa: ABCDE")`) isn't picked up as a real anchor.
     Comments are preserved (real anchors live in comments).
-    Newlines and overall byte positions are best-effort preserved so error
+    Newlines and overall character positions are best-effort preserved so error
     spans stay roughly meaningful.
     """
     try:
@@ -383,7 +383,7 @@ def _strip_python_strings(text: str) -> str:
         # the caller will just see the unfiltered anchor matches.
         return text
 
-    # Collect (start_byte_offset, end_byte_offset) ranges for STRING tokens.
+    # Collect (start_char_offset, end_char_offset) ranges for STRING tokens.
     # tokenize gives (row, col) — convert to absolute offsets via line index.
     line_starts = [0]
     for i, ch in enumerate(text):

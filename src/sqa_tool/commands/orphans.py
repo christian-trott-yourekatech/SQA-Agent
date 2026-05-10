@@ -109,11 +109,10 @@ def _report(
     `unreadable_findings` class — exactly the rot the orphans command exists
     to flag — rather than silently disappearing from the report.
     """
-    open_ids = {fid for fid, f in loaded.items() if f.status != "resolved"}
     anchor_ids = set(anchored.keys())
     json_ids = set(loaded) | set(unreadable)
 
-    findings_without_anchors = sorted(open_ids - anchor_ids)
+    findings_without_anchors = sorted(set(loaded) - anchor_ids)
     anchors_without_findings = [
         {"id": fid, "in_files": anchored[fid]} for fid in sorted(anchor_ids - json_ids)
     ]
@@ -124,11 +123,15 @@ def _report(
         if missing:
             stale_related.append({"id": fid, "missing": missing})
 
+    unreadable_with_locations = [
+        {"id": fid, "in_files": anchored.get(fid, [])} for fid in sorted(unreadable)
+    ]
+
     return {
         "findings_without_anchors": findings_without_anchors,
         "anchors_without_findings": anchors_without_findings,
         "stale_related_files": stale_related,
-        "unreadable_findings": sorted(unreadable),
+        "unreadable_findings": unreadable_with_locations,
     }
 
 

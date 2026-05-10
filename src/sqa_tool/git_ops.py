@@ -11,23 +11,50 @@ class GitError(RuntimeError):
 
 
 def _git(project_root: Path, *args: str, input_text: str | None = None) -> str:
+    """Run `git <args>` in text mode and return stdout.
+
+    Stderr is decoded as UTF-8 with strict errors (matches git's output for
+    the cases this tool invokes).
+    """
+    return _run_git(project_root, args, input_data=input_text, binary=False).stdout
+
+
+def _git_bytes(project_root: Path, *args: str) -> bytes:
+    """Run `git <args>` and return raw stdout bytes.
+
+    Used when stdout may not be valid UTF-8 (e.g. binary blobs from `git
+    show`). Shares error handling with `_git`.
+    """
+    return _run_git(project_root, args, binary=True).stdout
+
+
+def _run_git(
+    project_root: Path,
+    args: tuple[str, ...],
+    *,
+    input_data: str | bytes | None = None,
+    binary: bool = False,
+):
+    """Shared subprocess wrapper for `_git` / `_git_bytes`. Raises `GitError`."""
     try:
-        result = subprocess.run(
+        return subprocess.run(
             ["git", *args],
             cwd=project_root,
-            input=input_text,
+            input=input_data,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
+            text=not binary,
+            encoding=None if binary else "utf-8",
             check=True,
         )
     except FileNotFoundError as e:
         raise GitError("git executable not found in PATH") from e
     except subprocess.CalledProcessError as e:
+        stderr = e.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
         raise GitError(
-            f"git {' '.join(args)} failed (exit {e.returncode}): {e.stderr.strip()}"
+            f"git {' '.join(args)} failed (exit {e.returncode}): {stderr.strip()}"
         ) from e
-    return result.stdout
 
 
 def is_repo(project_root: Path) -> bool:
@@ -52,8 +79,11 @@ def ls_files(project_root: Path) -> list[str]:
     """Return project-relative paths of all git-tracked files in the project root.
 
     Uses NUL-delimited output (`-z`) so paths containing whitespace, embedded
-    quotes, or non-UTF-8 bytes are returned verbatim rather than in git's
-    C-style quoted form.
+    quotes, or other shell-special characters are returned verbatim rather
+    than in git's C-style quoted form. Path bytes are decoded as UTF-8
+    (strict) via `_git`, so paths with non-UTF-8 bytes raise
+    UnicodeDecodeError at the subprocess boundary — the project assumes
+    UTF-8-encoded source repositories throughout.
     """
     out = _git(project_root, "ls-files", "-z")
     return [p for p in out.split("\0") if p]
@@ -123,20 +153,7 @@ def diff_blob_to_file(project_root: Path, blob: str, rel_path: str) -> str:
             return f"Binary files /dev/null and b/{rel_path} differ\n"
         return _format_synthetic_diff(rel_path, "", raw.decode("utf-8", errors="replace"))
     if not file_exists:
-        try:
-            raw = subprocess.run(
-                ["git", "show", blob],
-                cwd=project_root,
-                capture_output=True,
-                check=True,
-            ).stdout
-        except FileNotFoundError as e:
-            raise GitError("git executable not found in PATH") from e
-        except subprocess.CalledProcessError as e:
-            raise GitError(
-                f"git show {blob} failed (exit {e.returncode}): "
-                f"{e.stderr.decode('utf-8', errors='replace').strip()}"
-            ) from e
+        raw = _git_bytes(project_root, "show", blob)
         if b"\x00" in raw:
             return f"Binary files a/{rel_path} and /dev/null differ\n"
         return _format_synthetic_diff(rel_path, raw.decode("utf-8", errors="replace"), "")

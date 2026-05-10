@@ -1,10 +1,31 @@
 """sqa-tool init — scaffold .sqa/ and Claude Code skill/agent dirs in the current project."""
 
 import shutil
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqa_tool import paths
 from sqa_tool.config import DEFAULT_CONFIG_TEXT
+
+
+@dataclass(frozen=True)
+class BundledEntry:
+    """One bundled file scheduled for installation into `.claude/`."""
+
+    src: Path
+    dst: Path
+    is_framework: bool
+
+
+@dataclass
+class InstallReport:
+    """Project-relative paths affected by `_install_entries`."""
+
+    framework_overwritten: list[str] = field(default_factory=list)
+    framework_installed: list[str] = field(default_factory=list)
+    project_preserved: list[str] = field(default_factory=list)
+
 
 # Agents whose primary `<name>.md` file is the framework agent. Any other
 # `.md` file in `agents/` (e.g. `review-file-prompts.md`,
@@ -44,10 +65,8 @@ def _is_framework_agent_file(stem: str) -> bool:
     return stem in _FRAMEWORK_AGENT_STEMS
 
 
-def _bundled_claude_entries(
-    project_root: Path,
-) -> list[tuple[Path, Path, bool]]:
-    """Yield (src, dst, is_framework) for every bundled skill/agent file.
+def _bundled_claude_entries(project_root: Path) -> list[BundledEntry]:
+    """Yield a `BundledEntry` for every bundled skill/agent file.
 
     Framework files are overwritten by `init`; project-specific files are
     preserved when they already exist (created when they don't).
@@ -60,7 +79,7 @@ def _bundled_claude_entries(
     `_FRAMEWORK_AGENT_STEMS` are framework; the rest (`-prompts`,
     `-guidelines`, etc.) are project-specific.
     """
-    entries: list[tuple[Path, Path, bool]] = []
+    entries: list[BundledEntry] = []
 
     skills_src = _bundled_dir("skills")
     skills_dst_root = project_root / ".claude" / "skills"
@@ -71,7 +90,9 @@ def _bundled_claude_entries(
             if not (src_file.is_file() and src_file.suffix == ".md"):
                 continue
             dst_file = skills_dst_root / skill_dir.name / src_file.name
-            entries.append((src_file, dst_file, _is_framework_skill_file(src_file.name)))
+            entries.append(
+                BundledEntry(src_file, dst_file, _is_framework_skill_file(src_file.name))
+            )
 
     agents_src = _bundled_dir("agents")
     agents_dst_root = project_root / ".claude" / "agents"
@@ -79,45 +100,41 @@ def _bundled_claude_entries(
         if not (src_file.is_file() and src_file.suffix == ".md"):
             continue
         dst_file = agents_dst_root / src_file.name
-        entries.append((src_file, dst_file, _is_framework_agent_file(src_file.stem)))
+        entries.append(BundledEntry(src_file, dst_file, _is_framework_agent_file(src_file.stem)))
 
     return entries
 
 
-def _install_entries(
-    project_root: Path, entries: list[tuple[Path, Path, bool]]
-) -> tuple[list[str], list[str], list[str]]:
+def _install_entries(project_root: Path, entries: list[BundledEntry]) -> InstallReport:
     """Copy bundled entries into `.claude/`, applying the framework/project
     overwrite policy.
 
     Framework files: always written (overwriting any existing copy). Project
     files: written only if the target doesn't exist.
 
-    Returns three lists of project-relative paths:
+    The returned `InstallReport` carries project-relative paths:
       - framework_overwritten: framework files that replaced an existing copy.
       - framework_installed: framework files that didn't have a prior copy.
       - project_preserved: project files left in place because the user has
         a customized version. Project files that didn't exist are silently
         installed (caller doesn't usually need to know).
     """
-    framework_overwritten: list[str] = []
-    framework_installed: list[str] = []
-    project_preserved: list[str] = []
+    report = InstallReport()
 
-    for src, dst, is_framework in entries:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        rel = str(dst.relative_to(project_root))
-        if is_framework:
-            existed = dst.exists()
-            shutil.copy2(src, dst)
-            (framework_overwritten if existed else framework_installed).append(rel)
+    for entry in entries:
+        entry.dst.parent.mkdir(parents=True, exist_ok=True)
+        rel = str(entry.dst.relative_to(project_root))
+        if entry.is_framework:
+            existed = entry.dst.exists()
+            shutil.copy2(entry.src, entry.dst)
+            (report.framework_overwritten if existed else report.framework_installed).append(rel)
         else:
-            if dst.exists():
-                project_preserved.append(rel)
+            if entry.dst.exists():
+                report.project_preserved.append(rel)
                 continue
-            shutil.copy2(src, dst)
+            shutil.copy2(entry.src, entry.dst)
 
-    return framework_overwritten, framework_installed, project_preserved
+    return report
 
 
 def run(project_root: Path) -> int:
@@ -140,36 +157,35 @@ def run(project_root: Path) -> int:
     try:
         entries = _bundled_claude_entries(project_root)
     except FileNotFoundError as e:
-        print(f"warning: skill/agent scaffolding skipped — {e}", flush=True)
+        print(f"warning: skill/agent scaffolding skipped — {e}", file=sys.stderr, flush=True)
         entries = []
 
-    framework_overwritten, framework_installed, project_preserved = _install_entries(
-        project_root, entries
-    )
+    report = _install_entries(project_root, entries)
 
-    if framework_installed:
+    if report.framework_installed:
         print(
-            f"\nInstalled {len(framework_installed)} framework file(s):",
+            f"\nInstalled {len(report.framework_installed)} framework file(s):",
             flush=True,
         )
-        for p in framework_installed:
+        for p in report.framework_installed:
             print(f"  {p}", flush=True)
 
-    if framework_overwritten:
+    if report.framework_overwritten:
         print(
-            f"\nUpdated {len(framework_overwritten)} framework file(s) "
+            f"\nUpdated {len(report.framework_overwritten)} framework file(s) "
             "(overwritten with bundled defaults):",
             flush=True,
         )
-        for p in framework_overwritten:
+        for p in report.framework_overwritten:
             print(f"  {p}", flush=True)
 
-    if project_preserved:
+    if report.project_preserved:
         print(
-            f"\nPreserved {len(project_preserved)} project-specific file(s) (not overwritten):",
+            f"\nPreserved {len(report.project_preserved)} project-specific file(s) "
+            "(not overwritten):",
             flush=True,
         )
-        for p in project_preserved:
+        for p in report.project_preserved:
             print(f"  {p}", flush=True)
 
     if not sqa_existed:

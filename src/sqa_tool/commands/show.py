@@ -25,7 +25,6 @@ def show(project_root: Path, args: argparse.Namespace) -> int:
 def _filter(
     items: list[tuple[str, findings.Finding]],
     triage: str | None,
-    status: str | None,
 ) -> list[tuple[str, findings.Finding]]:
     out = []
     for fid, f in items:
@@ -35,8 +34,6 @@ def _filter(
                     continue
             elif f.triage != triage:
                 continue
-        if status is not None and f.status != status:
-            continue
         out.append((fid, f))
     return out
 
@@ -58,7 +55,7 @@ def _load_all(
 
 def list_(project_root: Path, args: argparse.Namespace) -> int:
     items, load_errors = _load_all(project_root)
-    items = _filter(items, args.triage, args.status)
+    items = _filter(items, args.triage)
     if args.count:
         print(len(items))
         return 1 if load_errors > 0 else 0
@@ -72,12 +69,10 @@ def status(project_root: Path, args: argparse.Namespace) -> int:
     items, load_errors = _load_all(project_root)
     by_triage: Counter[str] = Counter()
     by_severity: Counter[str] = Counter()
-    by_status: Counter[str] = Counter()
     for _fid, f in items:
         triage_key = f.triage if f.triage is not None else "untriaged"
         by_triage[triage_key] += 1
         by_severity[f.severity] += 1
-        by_status[f.status] += 1
 
     needs_review_count: int | None
     try:
@@ -94,12 +89,11 @@ def status(project_root: Path, args: argparse.Namespace) -> int:
 
     payload = {
         # `total` is the count of successfully-loaded findings, so it always
-        # equals sum(by_triage) == sum(by_severity) == sum(by_status). Items
-        # that failed to load are surfaced separately as `load_errors`.
+        # equals sum(by_triage) == sum(by_severity). Items that failed to load
+        # are surfaced separately as `load_errors`.
         "total": len(items),
         "by_triage": dict(by_triage),
         "by_severity": dict(by_severity),
-        "by_status": dict(by_status),
         "load_errors": load_errors,
         "needs_review": needs_review_count,
     }

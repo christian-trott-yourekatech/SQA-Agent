@@ -85,7 +85,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     lf = sub.add_parser("list-findings", help="List findings as a JSON array")
     lf.add_argument("--triage", choices=["auto", "interactive", "ignore", "untriaged"])
-    lf.add_argument("--status", choices=["open", "resolved"])
     lf.add_argument("--count", action="store_true", help="Print just the integer count")
     lf.add_argument("--limit", type=_nonneg_int, help="Print at most N findings")
 

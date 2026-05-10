@@ -40,7 +40,6 @@ def test_save_load_round_trip(initialized: Path):
         message="Test finding",
         severity="warning",
         triage="auto",
-        status="open",
         rationale="because reasons",
         related_files=["src/foo.py", "src/bar.py"],
     )
@@ -62,7 +61,6 @@ def test_no_id_field_in_json(initialized: Path):
     [
         ("severity", "critical"),
         ("triage", "bogus"),
-        ("status", "pending"),
     ],
 )
 def test_save_invalid_field(initialized: Path, field: str, value: str):

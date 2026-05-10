@@ -1,0 +1,10 @@
+{
+  "message": "Direct 'from conftest import ...' is fragile: relies on tests/ being on sys.path and bypasses pytest's normal conftest injection. The helpers _capture, _commit, _run could be promoted to fixtures or to a dedicated tests/_helpers.py module imported via package path. As-is, IDE/type-checker integration and refactoring tools may not resolve this import cleanly across configurations.",
+  "severity": "info",
+  "triage": "ignore",
+  "status": "open",
+  "rationale": "Current 'from conftest import _capture, _commit, _run' works reliably \u2014 pytest adds rootdir to sys.path, conftest.py is a regular Python module, and this import pattern is widespread in pytest projects. Claimed fragility is theoretical (IDE/tooling resolution depends on configuration) but not observed in this project. Both proposed remediations are disproportionate: Option A (promote to fixtures) requires changing every test signature for purely structural cleanup; Option B (dedicated helpers module) as proposed relies on the same sys.path mechanism it was meant to escape \u2014 actually fixing it requires tests/__init__.py plus pyproject.toml pythonpath config. Revisit only if tooling friction is actually observed. The related 'monkeypatch passed as positional arg' smell is a separate concern that could motivate fixture conversion on its own merits later.",
+  "related_files": [
+    "tests/test_commands.py"
+  ]
+}

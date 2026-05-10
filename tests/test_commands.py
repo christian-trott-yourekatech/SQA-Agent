@@ -4,7 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
-from conftest import _capture, _commit, _run
+import pytest
+from conftest import _capture, _commit, _run  # sqa: BC7GB
 
 from sqa_tool import findings
 
@@ -176,7 +177,6 @@ def test_record_and_show_finding(initialized: Path, capsys, monkeypatch):
     assert payload["id"] == fid
     assert payload["message"] == "Use isinstance instead of type()"
     assert payload["severity"] == "warning"
-    assert payload["status"] == "open"
     assert payload["triage"] is None
     assert payload["related_files"] == ["src/sample.py"]
 
@@ -251,8 +251,6 @@ def test_list_findings_filters(initialized: Path, capsys, monkeypatch):
 def test_negative_limit_rejected(initialized: Path, capsys, monkeypatch):
     # argparse should reject --limit=-1 (and its needs-review equivalent)
     # rather than silently end-slicing the result list.
-    import pytest
-
     with pytest.raises(SystemExit):
         _run(monkeypatch, initialized, "list-findings", "--limit=-1")
     with pytest.raises(SystemExit):
@@ -269,7 +267,6 @@ def test_status(initialized: Path, capsys, monkeypatch):
     assert s["total"] == 1
     assert s["by_triage"]["auto"] == 1
     assert s["by_severity"]["warning"] == 1
-    assert s["by_status"]["open"] == 1
 
 
 def _set_include_globs(project: Path, *patterns: str) -> None:

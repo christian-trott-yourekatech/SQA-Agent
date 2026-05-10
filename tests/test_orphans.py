@@ -26,7 +26,7 @@ def test_orphans_reports_unreadable_finding(initialized: Path, capsys, monkeypat
     _commit(initialized)
 
     out = json.loads(_capture(capsys, monkeypatch, initialized, "orphans"))
-    assert "BADID" in out["reported"]["unreadable_findings"]
+    assert any(item["id"] == "BADID" for item in out["reported"]["unreadable_findings"])
 
 
 def test_orphans_deletes_empty_scope_md(initialized: Path, capsys, monkeypatch):
@@ -143,28 +143,3 @@ def test_orphans_does_not_add_scope_md_to_related_files(initialized: Path, capsy
 
     f2 = findings.load_finding(initialized, fid)
     assert "src/.sqa.md" not in f2.related_files
-
-
-def test_orphans_excludes_resolved_findings_from_no_anchor_report(
-    initialized: Path, capsys, monkeypatch
-):
-    # A finding with status=='resolved' but no anchor must NOT appear in
-    # reported.findings_without_anchors — resolve strips anchors as part of
-    # its normal workflow, so the absence of an anchor is expected, not rot.
-    fid = _capture(
-        capsys,
-        monkeypatch,
-        initialized,
-        "record-finding",
-        "--message=already fixed",
-        "--related=src/sample.py",
-    ).strip()
-    # Manually flip status to 'resolved' on disk (resolve() would delete the
-    # JSON, leaving no finding to test against; this simulates a resolved
-    # finding that's still on disk for whatever reason).
-    f = findings.load_finding(initialized, fid)
-    f.status = "resolved"
-    findings.save_finding(initialized, fid, f)
-
-    out = json.loads(_capture(capsys, monkeypatch, initialized, "orphans"))
-    assert fid not in out["reported"]["findings_without_anchors"]

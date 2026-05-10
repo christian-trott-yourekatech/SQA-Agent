@@ -11,11 +11,9 @@ from sqa_tool import paths
 
 Severity = Literal["info", "warning", "error"]
 Triage = Literal["auto", "interactive", "ignore"]
-Status = Literal["open", "resolved"]
 
 _VALID_SEVERITIES = set(get_args(Severity))
 _VALID_TRIAGES = set(get_args(Triage))
-_VALID_STATUSES = set(get_args(Status))
 
 # RFC4648 base32 alphabet — A-Z2-7, no ambiguous chars.
 ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
@@ -30,7 +28,6 @@ class Finding:
     message: str
     severity: Severity = "info"
     triage: Triage | None = None
-    status: Status = "open"
     rationale: str = ""
     related_files: list[str] = field(default_factory=list)
 
@@ -60,8 +57,6 @@ def _validate(finding: Finding) -> None:
         raise ValueError(f"Invalid severity: {finding.severity!r}")
     if finding.triage is not None and finding.triage not in _VALID_TRIAGES:
         raise ValueError(f"Invalid triage: {finding.triage!r}")
-    if finding.status not in _VALID_STATUSES:
-        raise ValueError(f"Invalid status: {finding.status!r}")
 
 
 def save_finding(project_root: Path, finding_id: str, finding: Finding) -> None:
@@ -100,7 +95,6 @@ def _finding_from_dict(data: dict) -> Finding:
         message=data["message"],
         severity=data.get("severity", "info"),
         triage=data.get("triage"),
-        status=data.get("status", "open"),
         rationale=data.get("rationale", ""),
         related_files=list(data.get("related_files", [])),
     )
