@@ -1,0 +1,9 @@
+{
+  "message": "_set_include_globs (lines 272-284) parses TOML by line-prefix string matching, looking for 'include =' to substitute. It would silently skip a multi-line array form, an inline-table form, or commented-out includes; an 'include = ' inside a different section ([something_else]) would also match incorrectly. As tests grow, this fragility could mask test bugs. Consider using tomllib (read) + a tiny tomli_w/textual write, or scope a marker comment in the seed config that this helper finds. Low priority while config.toml stays simple.",
+  "severity": "info",
+  "triage": "ignore",
+  "rationale": "The _set_include_globs helper uses line-prefix string matching to rewrite the include= line in config.toml, which is fragile against multi-line array form, inline-tables, or 'include =' appearing in other sections. However: (1) the seed config.toml is scaffolded by sqa-tool init under our control with a predictable single-line 'include = [...]' form \u2014 none of the failure modes the reviewer cites (multi-line form, foreign sections) actually occur in practice; (2) the helper has an 'assert replaced' guard that fails loudly rather than silently if the line shape changes; (3) proper TOML rewriting needs either a new dep (tomli_w) or homegrown parsing \u2014 disproportionate for a test helper used in 4 sites. Reviewer themselves notes 'Low priority while config.toml stays simple.' Revisit if the seed config grows a multi-line include array or this helper starts misfiring.",
+  "related_files": [
+    "tests/test_commands.py"
+  ]
+}

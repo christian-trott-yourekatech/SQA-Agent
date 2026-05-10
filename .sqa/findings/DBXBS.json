@@ -1,0 +1,9 @@
+{
+  "message": "alloc_id has a TOCTOU race: the existence check and subsequent save_finding write are not atomic, so two concurrent allocators can pick the same ID and the second save_finding will silently overwrite the first finding. Consider O_CREAT|O_EXCL reservation (e.g. write a placeholder file atomically inside alloc_id, or use os.open with O_EXCL in save_finding to fail-fast on collision).",
+  "severity": "warning",
+  "triage": "interactive",
+  "rationale": "Real TOCTOU between alloc_id's existence check and save_finding's write \u2014 two concurrent allocators can pick the same ID and the second save_finding silently overwrites the first. In practice sqa-tool is a single-user CLI so the race is unlikely, but the fix has multiple valid shapes (placeholder file reserved with O_CREAT|O_EXCL inside alloc_id; or fail-fast O_EXCL in save_finding with retry; or accept the risk and document it). Choice depends on how strongly we want to support concurrent invocations and whether we accept a placeholder-leak failure mode. Needs project-owner input on which approach fits the tool's concurrency model.",
+  "related_files": [
+    "src/sqa_tool/findings.py"
+  ]
+}

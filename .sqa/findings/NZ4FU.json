@@ -1,0 +1,9 @@
+{
+  "message": "_strip_markdown_code_blocks does not blank indented (4-space) code blocks, only fenced ones. A markdown doc example written as an indented code block containing 'sqa: <id>' would be treated as a real anchor by find_anchors_for_orphan_scan and remove_anchor's scan view, leading to potential false-positive matches and (in remove_anchor) text corruption inside what the author intended as a code example.",
+  "severity": "info",
+  "triage": "interactive",
+  "rationale": "Real but narrow limitation: _strip_markdown_code_blocks only masks fenced blocks (``` and ~~~), not CommonMark 4-space indented code blocks. A markdown doc using an indented code example containing 'sqa: <id>' text would slip through masking and be matched by find_anchors_for_orphan_scan / remove_anchor's scan view. Needs project-owner input on scope: (a) just document the limitation (the existing 'sqa: NZ4FU' anchor on line 468 already gestures at this) and call it accepted; (b) add a minimal indented-code detector (4+ space indent following blank line, outside lists); or (c) full CommonMark indented-code semantics (interaction with lists, blockquotes, lazy continuation lines). Option (a) is cheapest and arguably correct given (a1) authors of sqa-tool docs are unlikely to use indented code blocks containing literal 'sqa: <id>' fixture strings, and (a2) full CommonMark parsing risks more bugs than the masking gap. Option (b)/(c) add real complexity. The choice is a design call, not a triage call.",
+  "related_files": [
+    "src/sqa_tool/anchors.py"
+  ]
+}

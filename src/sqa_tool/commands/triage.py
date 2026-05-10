@@ -66,8 +66,7 @@ def resolve(project_root: Path, args: argparse.Namespace) -> int:
         # no tool path to clean them up (manual source edits). Proceed loudly.
         print(f"warning: {e}", flush=True)
         print(
-            f"resolving {args.id} despite corrupt JSON: "
-            "stripping anchors and deleting the file.",
+            f"resolving {args.id} despite corrupt JSON: stripping anchors and deleting the file.",
             flush=True,
         )
     for path in _find_files_with_anchor(project_root, args.id):

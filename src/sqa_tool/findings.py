@@ -44,6 +44,7 @@ def gen_id() -> str:
 
 def alloc_id(project_root: Path, max_attempts: int = 100) -> str:
     """Allocate a fresh ID that doesn't collide with an existing finding file."""
+    # sqa: DBXBS
     fdir = paths.findings_dir(project_root)
     for _ in range(max_attempts):
         candidate = gen_id()
@@ -68,7 +69,7 @@ def save_finding(project_root: Path, finding_id: str, finding: Finding) -> None:
     path = paths.finding_path(project_root, finding_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(asdict(finding), indent=2) + "\n"
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path = path.with_suffix(path.suffix + f".{os.getpid()}.{secrets.token_hex(4)}.tmp")
     tmp_path.write_text(payload)
     os.replace(tmp_path, path)
 
@@ -151,6 +152,13 @@ def list_finding_ids(project_root: Path) -> list[str]:
 
 
 def delete_finding(project_root: Path, finding_id: str) -> None:
+    """Delete the finding file for ``finding_id``.
+
+    Intentionally idempotent: a no-op if the file is already absent. This
+    asymmetry with ``load_finding`` (which raises ``FileNotFoundError``) is
+    deliberate — callers use this for rollback after a failed insert and for
+    one-shot triage resolution, both of which benefit from idempotency.
+    """
     if not is_valid_id(finding_id):
         raise ValueError(f"Invalid finding ID: {finding_id!r}")
     path = paths.finding_path(project_root, finding_id)

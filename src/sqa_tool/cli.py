@@ -22,7 +22,7 @@ def _find_project_root(start: Path) -> Path | None:
     """Walk up from `start` looking for a directory that contains .sqa/ or is a git root."""
     current = start.resolve()
     while True:
-        if (current / paths.SQA_DIR_NAME).is_dir():
+        if (current / paths.SQA_DIR_NAME).is_dir():  # sqa: I4UGV
             return current
         if (current / ".git").exists():
             return current

@@ -25,7 +25,7 @@ def test_resolve_deletes_finding(initialized: Path, capsys, monkeypatch):
 def test_resolve_unknown_id_errors(initialized: Path, capsys, monkeypatch):
     """resolve with an unknown finding ID must print 'error: ...' and exit 1."""
     capsys.readouterr()
-    _run(monkeypatch, initialized, "resolve", "NOPE0", "--rationale=irrelevant", expected_exit=1)
+    _run(monkeypatch, initialized, "resolve", "NOPEZ", "--rationale=irrelevant", expected_exit=1)
     out = capsys.readouterr().out
     assert "error:" in out
 
@@ -39,7 +39,7 @@ def test_resolve_echoes_rationale(initialized: Path, capsys, monkeypatch):
     assert "because reasons" in out
 
 
-def test_resolve_proceeds_when_json_is_corrupt(initialized: Path, capsys, monkeypatch):
+def test_resolve_proceeds_when_json_is_corrupt(initialized: Path, monkeypatch):
     """resolve must succeed even when the JSON is corrupt: strip anchors and
     delete the JSON. Aborting would leave anchors with no tool path to clean
     them up — the user would have to edit source files manually.
@@ -61,10 +61,10 @@ def test_resolve_rejects_invalid_id_format(initialized: Path, capsys, monkeypatc
     """resolve must reject IDs that don't match the base32 alphabet up front,
     so a malformed ID can't fall into the corrupt-JSON proceed-anyway path.
     """
-    rc = _run(
-        monkeypatch, initialized, "resolve", "NOPE0", "--rationale=ignored", expected_exit=1
-    )
-    assert rc == 1
+    capsys.readouterr()
+    _run(monkeypatch, initialized, "resolve", "NOPE0", "--rationale=ignored", expected_exit=1)
+    out = capsys.readouterr().out
+    assert "Invalid finding ID" in out
 
 
 def test_resolve_strips_anchors_then_deletes(initialized: Path, capsys, monkeypatch):

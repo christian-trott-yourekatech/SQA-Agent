@@ -465,6 +465,7 @@ def _strip_markdown_code_blocks(text: str) -> str:
     Used so that anchor-looking text inside a documentation example
     (a fenced ```...``` block in a .md file) isn't picked up as a real anchor.
     """
+    # sqa: NZ4FU, Q6NUS
     out_chars = list(text)
     in_fence = False
     fence_marker: str | None = None

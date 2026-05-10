@@ -1,0 +1,9 @@
+{
+  "message": "The file at 356 lines covers many distinct concerns: init scaffolding (lines 13-162), finding record/show/list (165-269), needs-review lifecycle (272-310), resolve (312-326), findings-for-file scope (329-355). Splitting into test_init.py, test_findings.py, test_review_lifecycle.py would improve discoverability and let unrelated changes touch smaller files. Not urgent \u2014 pytest discovery handles either layout \u2014 but worth doing once the file grows past ~500 lines or if test additions become harder to place.",
+  "severity": "info",
+  "triage": "ignore",
+  "rationale": "File-splitting suggestion is forward-looking organizational advice, not a current defect. Reviewer explicitly notes 'Not urgent \u2014 pytest discovery handles either layout \u2014 but worth doing once the file grows past ~500 lines.' Current file is 356 lines and pytest discovery is unaffected by layout. Splitting now would be churn for cosmetic reorganization with no current pain point. Revisit if the file crosses ~500 lines or if test additions become hard to place.",
+  "related_files": [
+    "tests/test_commands.py"
+  ]
+}

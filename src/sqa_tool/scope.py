@@ -32,7 +32,14 @@ def _scope_files_for(project_root: Path, rel_file: str) -> list[Path]:
 
 
 def _matches_related(rel_file: str, related: list[str]) -> bool:
-    """True if `rel_file` matches any path in `related` (literal or fnmatch)."""
+    """True if `rel_file` matches any path in `related`.
+
+    Matching is either a literal exact match or `fnmatch.fnmatch`. Note that
+    `fnmatch`'s wildcards do not special-case the path separator, so e.g. a
+    pattern like ``src/*.py`` will match ``src/sub/foo.py`` (since ``*``
+    matches ``/``). Callers expecting shell-glob semantics (where ``*`` does
+    not cross directory boundaries) should pass literal paths.
+    """
     for pat in related:
         if pat == rel_file:
             return True
@@ -47,7 +54,9 @@ def findings_for_file(project_root: Path, rel_file: str) -> list[tuple[str, find
     Includes:
       - Findings whose anchor is directly in `rel_file`.
       - Findings whose anchor is in an ancestor `.sqa.md` AND whose related_files
-        matches `rel_file`.
+        matches `rel_file`. Matching is literal-equality or `fnmatch.fnmatch`
+        (note: `fnmatch`'s wildcards do not special-case the path separator,
+        so e.g. ``src/*.py`` matches ``src/sub/foo.py``).
     """
     out: list[tuple[str, findings.Finding]] = []
     seen: set[str] = set()

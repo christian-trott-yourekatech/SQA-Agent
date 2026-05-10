@@ -1,0 +1,9 @@
+{
+  "message": "_strip_markdown_code_blocks preserves fence lines verbatim (not blanked). When inside a fenced block of one marker style (e.g. ~~~), a line that looks like a fence of the other style (e.g. backticks) is treated as a fence line and left unchanged. If such a line contains 'sqa: <id>' text after the marker, it slips through the scan view. Likely rare in practice but the asymmetry (interior content blanked, fence-shaped lines preserved) is a hole in the masking invariant.",
+  "severity": "info",
+  "triage": "ignore",
+  "rationale": "Finding is factually incorrect. Tracing _strip_markdown_code_blocks: when in_fence is True, the closing-fence branch only matches when marker[0] == fence_marker[0] AND len(marker) >= len(fence_marker). An opposite-style fence-shaped line (e.g. backticks while inside a ~~~ block) fails the marker[0] equality and therefore falls through to the else branch (line 507-509), which calls _blank_range over the entire line. Opposite-style fence-shaped lines ARE blanked; the masking invariant holds for this case. The finding's premise that such lines are 'preserved verbatim' is wrong.",
+  "related_files": [
+    "src/sqa_tool/anchors.py"
+  ]
+}

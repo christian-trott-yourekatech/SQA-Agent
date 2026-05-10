@@ -70,6 +70,11 @@ def test_save_invalid_field(initialized: Path, field: str, value: str):
         findings.save_finding(initialized, fid, f)
 
 
+def test_save_invalid_id(initialized: Path):
+    with pytest.raises(ValueError):
+        findings.save_finding(initialized, "lower", findings.Finding(message="x"))
+
+
 def test_list_finding_ids(initialized: Path):
     assert findings.list_finding_ids(initialized) == []
     ids = []
@@ -140,6 +145,8 @@ def test_load_missing_message_field(initialized: Path):
             {"message": "ok", "related_files": ["fine.py", 7]},
             r"related_files\[1\] must be a string",
         ),
+        ({"message": "ok", "severity": 5}, "severity must be a string"),
+        ({"message": "ok", "triage": 3}, "triage must be a string or null"),
     ],
 )
 def test_load_wrong_type_fields(initialized: Path, data: dict, match: str):

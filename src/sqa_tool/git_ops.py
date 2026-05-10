@@ -34,7 +34,7 @@ def _run_git(
     project_root: Path,
     args: tuple[str, ...],
     *,
-    input_data: str | bytes | None = ...,
+    input_data: str | None = ...,
     binary: Literal[False] = ...,
 ) -> "subprocess.CompletedProcess[str]": ...
 
@@ -44,7 +44,7 @@ def _run_git(
     project_root: Path,
     args: tuple[str, ...],
     *,
-    input_data: str | bytes | None = ...,
+    input_data: bytes | None = ...,
     binary: Literal[True],
 ) -> "subprocess.CompletedProcess[bytes]": ...
 

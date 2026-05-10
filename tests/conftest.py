@@ -9,7 +9,15 @@ from sqa_tool.cli import main as cli_main
 
 
 def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+    try:
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode(errors="replace") if e.stderr else ""
+        stdout = e.stdout.decode(errors="replace") if e.stdout else ""
+        cmd = " ".join(args)
+        raise RuntimeError(
+            f"git {cmd} failed (exit {e.returncode}):\nstderr: {stderr}\nstdout: {stdout}"
+        ) from e
 
 
 def _commit(project: Path, msg: str = "x") -> None:

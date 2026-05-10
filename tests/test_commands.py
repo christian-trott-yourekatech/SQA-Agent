@@ -1,4 +1,5 @@
 """Integration tests: run CLI subcommands against a real temp project."""
+# sqa: LLXBS
 
 import json
 import subprocess
@@ -17,22 +18,25 @@ def test_framework_agent_stems_covers_all_framework_files():
     the set would silently be treated as project-specific — preserved across
     `sqa-tool init` upgrades and never refreshed. This test makes that loud.
     """
-    from sqa_tool.commands.init import _FRAMEWORK_AGENT_STEMS, _bundled_dir
+    from sqa_tool.commands.init import (
+        _FRAMEWORK_AGENT_STEMS,
+        _PROJECT_AGENT_SUFFIXES,
+        _bundled_dir,
+    )
 
     agents_dir = _bundled_dir("agents")
-    project_suffixes = ("-prompts", "-guidelines")
     unclassified = []
     for f in sorted(agents_dir.iterdir()):
         if not (f.is_file() and f.suffix == ".md"):
             continue
         stem = f.stem
-        if stem.endswith(project_suffixes):
+        if stem.endswith(_PROJECT_AGENT_SUFFIXES):
             continue
         if stem not in _FRAMEWORK_AGENT_STEMS:
             unclassified.append(f.name)
     assert not unclassified, (
         f"Bundled agent file(s) {unclassified} are neither in "
-        f"_FRAMEWORK_AGENT_STEMS nor end in {project_suffixes}. "
+        f"_FRAMEWORK_AGENT_STEMS nor end in {_PROJECT_AGENT_SUFFIXES}. "
         "Add the stem to the set, or rename to a project-file suffix."
     )
 
@@ -250,11 +254,17 @@ def test_list_findings_filters(initialized: Path, capsys, monkeypatch):
 
 def test_negative_limit_rejected(initialized: Path, capsys, monkeypatch):
     # argparse should reject --limit=-1 (and its needs-review equivalent)
-    # rather than silently end-slicing the result list.
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, initialized, "list-findings", "--limit=-1")
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, initialized, "needs-review", "--limit=-1")
+    # rather than silently end-slicing the result list. Call cli_main directly
+    # because argparse exits before _run can assert on the return code.
+    from sqa_tool.cli import main as cli_main
+
+    monkeypatch.chdir(initialized)
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main(["list-findings", "--limit=-1"])
+    assert excinfo.value.code == 2
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main(["needs-review", "--limit=-1"])
+    assert excinfo.value.code == 2
 
 
 def test_status(initialized: Path, capsys, monkeypatch):
@@ -269,7 +279,7 @@ def test_status(initialized: Path, capsys, monkeypatch):
     assert s["by_severity"]["warning"] == 1
 
 
-def _set_include_globs(project: Path, *patterns: str) -> None:
+def _set_include_globs(project: Path, *patterns: str) -> None:  # sqa: 3RCDJ
     cfg = project / ".sqa" / "config.toml"
     text = cfg.read_text()
     new = []

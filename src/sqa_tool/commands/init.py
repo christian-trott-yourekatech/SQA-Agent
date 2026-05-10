@@ -33,6 +33,11 @@ class InstallReport:
 # framework agent reads at runtime.
 _FRAMEWORK_AGENT_STEMS = frozenset({"review-file", "triage-file", "resolve-file", "fix-orphans"})
 
+# Suffixes on agent `.md` filenames that mark project-specific companion files
+# read by the framework agents at runtime (e.g. `review-file-prompts.md`,
+# `triage-file-guidelines.md`).
+_PROJECT_AGENT_SUFFIXES = ("-prompts", "-guidelines")
+
 
 def _bundled_dir(name: str) -> Path:
     """Locate the bundled `skills/` or `agents/` directory.
@@ -137,11 +142,16 @@ def _install_entries(project_root: Path, entries: list[BundledEntry]) -> Install
     return report
 
 
-def _bootstrap_sqa(project_root: Path) -> int | None:
+def _bootstrap_sqa(project_root: Path) -> tuple[int | None, bool]:
     """Create `.sqa/` if absent, or verify it is complete.
 
-    Returns `None` on success and an exit code when init must abort
-    (currently only when `.sqa/` exists but is missing required files).
+    Returns a `(abort_code, fresh_init)` tuple:
+      - `abort_code` is `None` on success and an exit code when init must
+        abort (currently only when `.sqa/` exists but is missing required
+        files).
+      - `fresh_init` is `True` iff this call just created `.sqa/` (i.e. the
+        directory did not previously exist). Meaningful only when
+        `abort_code is None`; otherwise `False`.
     """
     sqa = paths.sqa_dir(project_root)
     sqa_rel = sqa.relative_to(project_root)
@@ -152,7 +162,7 @@ def _bootstrap_sqa(project_root: Path) -> int | None:
         paths.config_path(project_root).write_text(DEFAULT_CONFIG_TEXT)
         paths.file_status_path(project_root).write_text("{}\n")
         print(f"Initialized {sqa_rel}/", flush=True)
-        return None
+        return None, True
 
     findings_dir = paths.findings_dir(project_root)
     config_path = paths.config_path(project_root)
@@ -173,13 +183,13 @@ def _bootstrap_sqa(project_root: Path) -> int | None:
             file=sys.stderr,
             flush=True,
         )
-        return 1
+        return 1, False
     print(
         f"{sqa_rel}/ already exists; preserving project state. "
         "Refreshing skill/agent framework files only.",
         flush=True,
     )
-    return None
+    return None, False
 
 
 def _print_install_report(report: InstallReport) -> None:
@@ -238,8 +248,20 @@ def _print_post_init_guidance(project_paths: list[str], fresh_init: bool) -> Non
 
 
 def run(project_root: Path) -> int:
-    fresh_init = not paths.sqa_dir(project_root).exists()
-    rc = _bootstrap_sqa(project_root)
+    """Run `sqa-tool init` against `project_root`.
+
+    The flow is:
+      1. Bootstrap `.sqa/` — create it from scratch (fresh init) or verify
+         that an existing `.sqa/` is complete; abort if it is incomplete.
+      2. Install bundled `.claude/` skill and agent files, overwriting
+         framework files and preserving any project-specific customizations.
+      3. Print an install report and post-init guidance (gitignore note on
+         fresh init, list of project-specific files to tailor).
+
+    Returns 0 on success, or the nonzero abort code from `_bootstrap_sqa`
+    (currently only when `.sqa/` exists but is missing required files).
+    """
+    rc, fresh_init = _bootstrap_sqa(project_root)
     if rc is not None:
         return rc
 

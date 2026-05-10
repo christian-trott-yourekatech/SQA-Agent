@@ -35,7 +35,15 @@ def _is_scope_md(rel: str) -> bool:
 
 
 def _delete_empty_scope_md_files(project_root: Path) -> list[str]:
-    """Auto-fix: delete .sqa.md files that contain no anchors. Returns deleted rel-paths."""
+    """Auto-fix: delete .sqa.md files that contain no anchors. Returns deleted rel-paths.
+
+    Edge case: find_anchors_for_orphan_scan deliberately skips anchors inside
+    fenced code blocks (they're treated as documentation examples). A .sqa.md
+    that documents the anchor format using only fenced-code examples and has
+    no real anchors outside them would therefore be silently git-rm'd here.
+    Likelihood is low in practice and the deletion is recoverable via git, but
+    future contributors should be aware before extending this logic.
+    """
     deleted = []
     for rel, abs_path in git_ops.walk_tracked_files(project_root):
         if not _is_scope_md(rel):
@@ -52,7 +60,7 @@ def _delete_empty_scope_md_files(project_root: Path) -> list[str]:
 
 def _load_findings(
     project_root: Path,
-) -> tuple[dict[str, "findings.Finding"], list[str]]:
+) -> tuple[dict[str, findings.Finding], list[str]]:
     """Load every finding by ID; return (loaded, unreadable).
 
     `unreadable` collects IDs whose JSON failed to parse (ValueError) — these
@@ -74,7 +82,7 @@ def _load_findings(
 def _add_missing_related_for_source_anchors(
     project_root: Path,
     anchored: dict[str, list[str]],
-    loaded: dict[str, "findings.Finding"],
+    loaded: dict[str, findings.Finding],
 ) -> list[tuple[str, str]]:
     """Auto-fix: for each finding whose anchor is in a source file (not .sqa.md),
     if the file isn't in related_files, add it. Returns (finding_id, rel_path) pairs added.
@@ -100,7 +108,7 @@ def _add_missing_related_for_source_anchors(
 def _report(
     project_root: Path,
     anchored: dict[str, list[str]],
-    loaded: dict[str, "findings.Finding"],
+    loaded: dict[str, findings.Finding],
     unreadable: list[str],
 ) -> dict[str, list]:
     """Compute the non-auto-fixable orphan classes.
@@ -108,6 +116,13 @@ def _report(
     Findings whose JSON failed to parse are surfaced as a distinct
     `unreadable_findings` class — exactly the rot the orphans command exists
     to flag — rather than silently disappearing from the report.
+
+    Asymmetry note: adding missing related_files entries is automated in
+    _add_missing_related_for_source_anchors (cheap, additive, deterministic),
+    but pruning *stale* related_files entries is intentionally left for human
+    triage. Deletion is destructive and the file may legitimately be coming
+    back (rename in flight, branch checkout, WIP move). Don't add a
+    half-finished prune step here thinking it was forgotten.
     """
     anchor_ids = set(anchored.keys())
     json_ids = set(loaded) | set(unreadable)
