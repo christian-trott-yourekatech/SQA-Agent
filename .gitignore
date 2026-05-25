@@ -6,3 +6,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# sqa-tool review session artifacts. Result files quote source and are
+# per-session — see README.md for the rationale on ignoring them by default.
+.sqa/result_*.json
+.sqa/logs/

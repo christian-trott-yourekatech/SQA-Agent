@@ -1,41 +1,69 @@
-# Reviewer v2 — Design
+# Design
 
-A redesign of the SQA Agent reviewer (v1 lives at `../Reviewer/`). Two structural shifts from v1:
+A code reviewer built on Claude Code skills and a small deterministic CLI.
+The agentic surface is a cluster of skills (`/sqa-review`, `/sqa-resolve`,
+`/sqa-status`) that fan out to per-file subagents; load-bearing
+bookkeeping (change detection, finding storage, schema enforcement, state-
+machine transitions) lives behind a Python CLI (`sqa-tool`).
 
-1. **Findings persist across runs** as first-class records, anchored in source by short comment tags. No more "every run starts cold and rediscovers everything."
-2. **Skills + deterministic tools** replace the Python-SDK-based harness. The agentic surface is a small cluster of skills; load-bearing bookkeeping (change detection, finding storage, schema enforcement) lives behind a small CLI tool.
-
-This document describes the design; implementation is out of scope here.
+This document is the source of truth for the design. Implementation details
+that don't change the architectural picture are out of scope here.
 
 ---
 
 ## 1. Motivation
 
-Problems with v1:
+The job of the reviewer is to:
 
-- Each `review` produces a fresh `result_<timestamp>.json` from nothing. Triage decisions don't carry forward; the same finding is re-discovered and re-triaged on every run.
-- File-blob hash gates re-review, so any unrelated edit to a file resurfaces every prior finding.
-- The agent has no awareness of past findings during a review — it cannot know "this was considered and accepted" or "this was fixed."
-- Orchestration is bound to `claude_agent_sdk`. The user can't easily switch models or harnesses, and updating workflow behavior requires Python edits.
+1. Identify quality issues in tracked source files — bugs, smells, missing
+   docs, inconsistencies — at a level that's worth a human (or LLM
+   reviewer) reading carefully and exercising judgment.
+2. Classify each issue into one of three buckets: things to fix
+   autonomously, things to walk through with the user, and things to leave
+   alone (with a rationale).
+3. Apply fixes for the autonomous bucket; offer a guided multi-turn
+   conversation for the interactive bucket.
 
-v2 fixes both classes of problem.
+Two design pivots shape the rest of the document:
+
+- **Skills + a deterministic CLI, not a Python harness.** The user-facing
+  verbs (`/sqa-review`, `/sqa-resolve`, `/sqa-status`) are Claude Code
+  skills. The skills call out to a small CLI tool (`sqa-tool`) for all
+  state-mutating work; they don't reach into JSON or git state directly.
+  This keeps the agentic surface in markdown — easy to inspect, easy to
+  customize per project — and the deterministic surface in Python where
+  it's testable.
+
+- **Per-run result files, not persistent findings.** Each review session
+  writes one `.sqa/result_<timestamp>.json` containing every finding
+  recorded that session, every triage decision, every status transition.
+  No durable per-finding records, no in-source anchor comments tying code
+  back to finding IDs. Design intent that should outlive a single review
+  session is captured as **defensive comments in source**, written at
+  resolve time — a comment in the code, near the code it explains, that
+  future reviewers see naturally.
 
 ## 2. Goals & non-goals
 
 ### Goals
 
-- Findings are durable. Triage decisions outlive the run that produced them.
-- The agent has structured awareness of prior findings during review and respects them.
-- Anchors travel with code (renames, moves, refactors) without manual sync.
 - Bookkeeping is deterministic and testable; judgment is agentic.
-- Skill-driven UX, harness-native (no SDK lock-in).
-- Scales to projects with hundreds of files and thousands of findings.
+- Skill-driven UX, harness-native: no SDK lock-in, no Python orchestration
+  in the user's path.
+- Scales to projects with hundreds of files and dozens of findings per
+  session.
+- Project-customizable without forking: the review prompt, triage
+  guidelines, and per-project quality-check command are project-owned
+  files preserved across tool upgrades.
+- Concurrent-write safe: parallel subagents recording findings or
+  classifying them don't corrupt the result file.
 
 ### Non-goals
 
 - Cross-repo finding aggregation.
-- An OSS-grade UI / dashboard. Findings are inspected via CLI and `git`.
-- Direct migration of v1 result files. v2 starts fresh; v1 stays available for projects already using it.
+- A web UI / dashboard. Findings are inspected via CLI and `git`.
+- Persistent finding records across sessions. (See § 8 for the rationale,
+  and § 11 for the opt-in path if this turns out to matter.)
 
 ## 3. Architecture summary
 
@@ -51,172 +79,327 @@ v2 fixes both classes of problem.
                           ▼
 ┌────────────────────────────────────────────────────────────────┐
 │ Subagents (markdown in agents/)                                │
-│   review-file   — review one file with prior-finding context   │
-│   triage-file   — autonomously triage untriaged findings in    │
-│                   one file                                     │
-│   resolve-file  — fix all auto-class findings in one file      │
-│   fix-orphans   — clean up orphans the tool can't fix          │
+│   review-file      — review one file                           │
+│   triage-file      — triage findings on one file               │
+│   resolve-file     — fix all auto-class findings on one file   │
+│   triage-general   — triage `file == null` findings            │
+│   resolve-general  — fix all auto-class general findings       │
 └────────────────────────────────────────────────────────────────┘
                           │
                           │ all state changes
                           ▼
 ┌────────────────────────────────────────────────────────────────┐
-│ sqa-tool (deterministic CLI)                                │
-│   needs-review, mark-reviewed,                                 │
-│   findings-for-file, list-findings, show-finding, status,      │
-│   record-finding, triage, resolve,                             │
-│   orphans, diff-since-review                                   │
+│ sqa-tool (deterministic CLI)                                   │
+│   Session lifecycle:                                           │
+│     start-result, active-result, categories                    │
+│   Change detection:                                            │
+│     needs-review, mark-reviewed, diff-since-review             │
+│   Findings (operate on the active result file):                │
+│     record-finding, triage, resolve,                           │
+│     show-finding, list-findings, findings-for-file, status     │
 └────────────────────────────────────────────────────────────────┘
                           │
                           ▼
 ┌────────────────────────────────────────────────────────────────┐
 │ On-disk state                                                  │
-│   .sqa/                                                     │
-│     config.toml             — include/exclude globs            │
+│   .sqa/                                                        │
+│     config.toml             — include/exclude globs + category │
+│                               list                             │
 │     file_status.json        — per-file last-reviewed git hash  │
 │                               (fcntl-locked for concurrent     │
 │                                writes)                         │
-│     findings/<id>.json      — one file per finding             │
-│   <project tree>                                               │
-│     .sqa.md              — top-level (project) scope anchors│
-│     <dir>/.sqa.md        — directory (module) scope anchors │
-│     <source files>          — file-scope anchors as comments   │
+│     result_<timestamp>.json — one per review session           │
+│                               (fcntl-locked for concurrent     │
+│                                writes)                         │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-The tool owns *state*. Skills and subagents own *judgment*. They never edit state files directly — always via `sqa-tool`.
+The CLI owns *state*. Skills and subagents own *judgment*. They never edit
+state files directly — always via `sqa-tool`.
 
 ## 4. Storage model
 
-### 4.1 Anchors
+### 4.1 Result files
 
-A finding has one or more **anchors** — short comments embedded in source files (or `.sqa.md` files) that tag the finding's location.
+Every `/sqa-review` invocation creates a fresh result file at
+`.sqa/result_<YYYY_MM_DD_HHMMSS>.json` and starts recording findings into
+it. The file accumulates state through the session: review records,
+triage decisions, resolve transitions. Nothing is deleted along the way —
+`resolve` flips `status`; the entry stays for the record.
 
-Format:
+The "active" result file is the most recent one by lexical filename order
+(which matches creation order given the timestamp suffix). Mutating
+commands (`record-finding`, `triage`, `resolve`) operate on the active
+result; they refuse to touch historical results. Read commands default to
+the active result and accept `--from <path>` to inspect an older one
+(historical results are read-only).
 
-```
-# sqa: K7M3X, A4B9P
-```
+This per-run model is intentional. Persistent finding records (the
+alternative — keep one JSON per finding across sessions, with in-source
+anchor comments pointing back) buy "the reviewer sees what we decided
+last time" at the cost of meaningful machinery: anchor placement, orphan
+reconciliation when files move, schema migrations, anchor debris in
+source. The per-run model trades that machinery for a different mechanism
+— **defensive comments**, § 6.4 — that puts rationale where the next
+reviewer will naturally find it.
 
-IDs are short random base32 strings (5 characters, ~25 bits of entropy). They are short enough to type, speak, and grep; the collision probability for any realistic project size is negligible. The tool generates a fresh ID on `record-finding` and retries on the rare file-exists collision.
-
-Per language:
-
-| Language | Comment prefix | Example |
-|---|---|---|
-| Python, shell, Ruby | `#` | `# sqa: K7M3X` |
-| JavaScript, TypeScript, Go, Rust, C, C++ | `//` | `// sqa: K7M3X` |
-| HTML, XML | `<!-- ... -->` | `<!-- sqa: K7M3X -->` |
-| SQL | `--` | `-- sqa: K7M3X` |
-| CSS | `/* ... */` | `/* sqa: K7M3X */` |
-| YAML, TOML, INI | `#` | `# sqa: K7M3X` |
-| Markdown | `<!-- ... -->` | `<!-- sqa: K7M3X -->` |
-
-Multiple findings can share a line: `# sqa: K7M3X, A4B9P, Q2R7T`.
-
-The comment may appear on its own line or trailing a code line. The exact line number is **not** stored — the tool finds anchors by grepping.
-
-### 4.2 Anchor location *is* the scope
-
-A single rule governs scope:
-
-> A `.sqa.md` file in a directory scopes its findings to that directory and its descendants. A finding's scope is wherever its anchor lives.
-
-This means:
-
-- File scope: anchor in the source file itself.
-- Module scope: anchor in `<dir>/.sqa.md`.
-- Project scope: anchor in the top-level `.sqa.md` (the project root is just the topmost directory).
-
-There is no special-case handling for project vs. module scope — it's the same rule applied at a different directory.
-
-The finding JSON file does **not** store a scope field. Scope is derived from where the anchor for ID *X* currently lives. This makes renames and directory moves automatic: `git mv auth/ identity/` carries the metadata file and all anchors with it.
-
-### 4.3 `.sqa.md` files
-
-`.sqa.md` is anchors-only. It does **not** quote finding text or its own location — both would create sync footguns when the JSON content or the directory name changes.
-
-A typical file looks like:
-
-```markdown
-<!-- sqa: K7M3X, A4B9P -->
-
-<!-- sqa: Q2R7T -->
-```
-
-That's it. Optional human-authored prose (notes, headings) is fine — the tool only cares about lines containing anchors. Grouping multiple anchors on one line is a stylistic choice; ordering and spacing are entirely up to the user.
-
-The file is git-mergeable in the normal way and travels with `git mv`.
-
-`.sqa.md` is created lazily — only when a finding requires it. Empty or anchor-less metadata files are pruned by `sqa-tool orphans`.
-
-### 4.4 Finding JSON files
-
-One file per finding at `.sqa/findings/<id>.json`. **The filename is the ID; the JSON content does not repeat it.** This avoids any chance of filename/content drift.
+### 4.2 Result file shape
 
 ```json
 {
-  "message": "Session-creation path raises bare Exception; rest of the module uses AuthError. Standardize on AuthError.",
-  "severity": "warning",
-  "triage": "interactive",
-  "status": "open",
-  "rationale": "Standardizing on AuthError lets callers handle auth failures uniformly. Marc has flagged this as a customer-visible bug source.",
-  "related_files": ["auth/login.py", "auth/session.py"]
+  "version": 2,
+  "timestamp": "2026_05_25_142318",
+  "total": 17,
+  "findings": [
+    {
+      "id": 1,
+      "category": "error-handling",
+      "file": "src/auth/login.py",
+      "line": 42,
+      "quoted_text": "raise Exception(\"login failed\")",
+      "message": "Session-creation path raises bare Exception; rest of the module uses AuthError. Standardize on AuthError.",
+      "severity": "warning",
+      "triage": "auto",
+      "rationale": "AuthError is already imported and used elsewhere in the module. Replace the bare Exception with AuthError on this line; no other changes needed.",
+      "status": "open",
+      "related": []
+    }
+  ]
 }
 ```
 
 Field reference:
 
-| Field | Type | Description |
-|---|---|---|
-| `message` | string | The finding itself. Plain prose. |
-| `severity` | enum: `info \| warning \| error` | |
-| `triage` | enum: `auto \| interactive \| ignore` or `null` | `null` means untriaged. |
-| `status` | enum: `open` | Reserved for future use. Findings on disk are always `open`; `resolve` deletes the JSON file rather than transitioning to a `resolved` status. The audit trail of resolutions lives in git history. |
-| `rationale` | string | Current-state reasoning. Updated on every state change; the LLM is responsible for keeping it coherent. **Not** a history log. |
-| `related_files` | string[] | Files the finding refers to. Paths are project-relative (the same convention as `git ls-files` output). Used by `findings-for-file` to surface higher-scope findings to file reviews, and by `orphans` to detect when referenced files have been renamed/deleted. |
+| Field | Notes |
+|---|---|
+| `id` | Per-result-file sequential integer. Starts at 1; no need for global uniqueness across sessions. |
+| `category` | One of the project's review categories (see § 5.1). Soft label — `--category` accepts any string with a warning if it's outside the configured list. |
+| `file` | Project-relative path. `null` for project-wide findings that don't anchor to a single file. |
+| `line` | Optional. Line in `file` at recording time — the **primary locator** alongside `file`. May drift as fixes shift lines during a resolve pass; the resolver handles that. |
+| `quoted_text` | Optional short excerpt (≤ ~3 lines) of the offending code. Supplementary locator that helps disambiguate when the line has drifted, and makes the result file readable on its own. Not a definitive "if-not-found-then-already-resolved" signal — auto-resolve may have altered quoted code while fixing a *different* finding on the same lines. |
+| `message` | The finding itself, in prose. |
+| `severity` | `info` \| `warning` \| `error`. |
+| `triage` | `null` (untriaged) \| `auto` \| `interactive` \| `ignore`. |
+| `rationale` | Current-state reasoning. For `auto`-triaged findings, includes the resolve hint — what to change and why. For `interactive`, what needs human input. For `ignore`, the specific reason no action applies. Replaced wholesale on every state change; the LLM keeps it coherent. |
+| `status` | `open` \| `resolved`. See § 4.3 for the state machine. |
+| `related` | Optional list of additional files the finding concerns. Used for multi-file findings (e.g. a DRY violation spanning `foo.py` and `bar.py`). `findings-for-file` matches on `file` *or* `related`. |
 
-**No `id` field, no `history` field, no `line` field, no `scope` field.** ID is the filename. History comes from `git log .sqa/findings/<id>.json`. Line is found by grepping anchors. Scope is derived from anchor location.
+**Ordering.** Findings in the JSON array are stored in `id` order
+(1, 2, 3, …). IDs are allocated sequentially at `record-finding` time;
+under parallel review, allocation order matches commit order under the
+result-file lock (§ 4.5).
 
-ID format: 5-character base32 (alphabet `A-Z2-7`, excluding ambiguous characters where reasonable). Generated randomly by `record-finding`; on collision (file already exists) the tool retries.
+**ID scoping.** IDs are scoped to a single result file. `sqa-tool resolve 5`
+resolves finding 5 in the active result; with `--from=<path>`, IDs are
+scoped to that file. There is no cross-file ID space.
 
-### 4.5 Files without comment syntax
+### 4.3 Triage / status state machine
 
-JSON, binary, and some config formats can't carry inline anchors. Findings on these files are anchored in the **nearest enclosing `.sqa.md`** (e.g. for `data/config.json`, the anchor lands in `data/.sqa.md` or, if that doesn't exist yet, the project-root `.sqa.md`). The actual file path goes in `related_files`.
+Five valid states; `untriaged+resolved` and `ignore+open` are illegal at
+the storage boundary (the loader rejects them).
 
-This treats them uniformly with module-scope findings — same scope rule, same renaming behavior, no special path-string fragility. The only loss is that the finding's anchor isn't *immediately* visible when reading the file itself, which is intrinsic to non-commentable files.
+| Current state                  | `triage ignore`         | `triage auto` / `triage interactive` | `resolve`               |
+|---|---|---|---|
+| `untriaged + open`             | → `ignore + resolved`   | → `auto`/`interactive` + `open`      | (rejected — triage first) |
+| `auto + open`                  | → `ignore + resolved`   | → other + `open`                     | → `auto + resolved`     |
+| `interactive + open`           | → `ignore + resolved`   | → other + `open`                     | → `interactive + resolved` |
+| `ignore + resolved`            | (rationale update only) | → `auto`/`interactive` + `open` *(un-ignoring)* | (rejected — already resolved) |
+| `auto`/`interactive` + `resolved` | rejected — no reopen | rejected — no reopen                 | (rejected — already resolved) |
 
-### 4.6 Security & data-leakage tradeoff
+Key invariants:
 
-Storing findings in-tree means:
+- **`triage ignore` always implies `status = resolved`** — same call, same
+  transaction. `ignore` is a bookkeeping close, not a pending state.
+- **Un-ignoring is permitted.** Re-triaging an `ignore + resolved` finding
+  to `auto`/`interactive` flips status back to `open`. No code was changed
+  on the way in (that's what `ignore` *means*), so there's nothing to
+  undo.
+- **No reopen of action-resolved findings.** Once `auto` or `interactive`
+  resolution has actually edited code, the finding is terminal.
+  Re-surfacing the concern means recording a fresh finding on the next
+  review pass.
 
-- Finding text is committed to git history. Resolved findings whose JSON files are deleted still appear in older commits.
-- Security findings, which may name vulnerable code paths, become permanently visible in repo history. Even after the underlying issue is fixed, the description remains discoverable.
-- For private repos this is mostly acceptable; for public repos or repos shared with vendors, it's a real concern.
+### 4.4 Locator: file + line + quoted_text
 
-**Default: do not gitignore `.sqa/`.** The version-controlled audit trail is the primary value proposition. `sqa-tool init` logs an explicit message to the user noting:
+`file` + `line` is the primary locator. The resolver, given a target
+file and line number, locates the finding's referent reliably even after
+multiple prior fixes in the same session have shifted lines — large-batch
+resolve runs were the validating case for this approach in earlier
+generations of the tool.
 
-- That `.sqa/findings/` will be tracked by git unless they choose otherwise;
-- That for security-sensitive projects (or projects shared with parties who shouldn't see vulnerability descriptions), they may want to add `.sqa/findings/` to `.gitignore`;
-- That the consequence of gitignoring is loss of the git-based audit trail and merge-friendly storage.
+`quoted_text` is supplementary: a short excerpt of the offending code,
+recorded at review time. It helps disambiguate when several findings
+cluster on overlapping lines and an earlier resolve has changed the code,
+and it makes the result file readable on its own (you can see the
+context without opening the source). It is not treated as a definitive
+"if-not-found-then-already-resolved" signal — the resolver applies
+judgment, since auto-resolve may have altered quoted text while fixing a
+different finding nearby.
 
-Future enhancements (post-MVP, only if real usage demands it):
+If quoting isn't natural (project-wide finding, or one about a missing
+thing rather than an existing thing), `quoted_text` may be `null`.
 
-- A `--private` flag on `record-finding` that routes a single finding to `.sqa/private/findings/<id>.json` (gitignored by `init`).
-- A `private_severities` config knob that auto-routes findings of given severities to the private location.
+### 4.5 Concurrent writes
 
-These are deferred — the simple "all in or all out, your call" default is enough to start.
+Parallel subagents call `record-finding` (during review), `triage`
+(during the autonomous triage phase), and read the active result via
+`findings-for-file` and friends. Auto-resolve is serial, so only one
+resolver at a time mutates the result file — but read commands still
+run concurrently with it.
 
-## 5. Skills and subagents
+All mutations are serialized by an `fcntl` exclusive lock on the active
+result file, held for the read-modify-write critical section. Lock
+contention is negligible — each critical section is short (a JSON load,
+an edit, a JSON dump on a kilobytes-scale file).
 
-### 5.1 User-facing skills
+Linux/Mac/WSL only. Windows-native support is out of scope.
 
-Three skills, each owning one user-visible verb. Composable; user-invokable independently. The `sqa-` prefix avoids collision with Claude Code's built-in `/review` slash command.
+## 5. CLI surface
 
-**Installation model:** skills and subagents are installed per-project, scaffolded by `sqa-tool init` into the project's harness directories. Each skill or subagent that has project-customizable content is split into two files:
+### 5.1 `.sqa/config.toml`
 
-- A **framework file** that holds the workflow logic — what tools to call, in what order, dispatch patterns, etc.
-- A **project file** that holds project-specific configuration — quality-check command, review prompt sections, triage guidelines, project conventions.
+```toml
+[files]
+include = ["src/**/*.py"]
+exclude = ["src/**/*_test.py"]
+
+[categories]
+# Canonical list of review categories. The review-file framework subagent
+# fetches this list (via `sqa-tool categories`) and tags each finding with
+# one. The CLI's --category flag uses it for soft validation (unknown
+# values warn). The project review prompt itself stays tool-agnostic and
+# doesn't mention this list.
+list = [
+  "dry-ssot",
+  "interfaces",
+  "logic",
+  "comments",
+  "error-handling",
+  "kiss-yagni",
+  "security",
+  "project-specific",
+]
+```
+
+That's all the configuration. No `[agent]` block (model selection is
+harness-native), no `[tools]` block (skills invoke project-local checks
+directly via Bash), no `[dispatch]` block (per-invocation parameters come
+from skill arguments or interactive prompts).
+
+Categories are tool-machinery, not review guidance. They live in
+`config.toml` because that's the project's tool-configuration surface;
+the project's review *content* lives in `review-file-prompt.md` and stays
+tool-agnostic. The prompt could be handed to any reviewer, human or
+otherwise — no mention of `sqa-tool` or category names in the prompt
+itself.
+
+### 5.2 Commands
+
+Grouped by phase:
+
+```
+# Session lifecycle
+sqa-tool init                                         # Scaffold .sqa/ and .claude/
+sqa-tool start-result                                 # Begin a review session
+sqa-tool active-result                                # Print path of most-recent result file
+sqa-tool categories                                   # Print configured category list
+
+# Change detection
+sqa-tool needs-review [--count] [--limit N]           # List/count files needing review
+sqa-tool mark-reviewed <path>                         # Record current blob hash
+sqa-tool diff-since-review <path>                     # Diff vs last-reviewed blob
+
+# Findings (mutating; operate on the active result file only)
+sqa-tool record-finding --message=... --severity=... \
+    --file=<path> [--line=N] [--quoted-text=...] \
+    [--category=...] [--related=<path> ...] [--rationale=...]
+sqa-tool triage <id> auto|interactive|ignore --rationale=...
+sqa-tool resolve <id> --rationale=...
+
+# Findings (read; default to active, accept --from for historical)
+sqa-tool show-finding <id> [--from <path>]
+sqa-tool list-findings [--triage=...] [--status=...] [--count] [--limit N] [--from <path>]
+sqa-tool findings-for-file <path> [--from <path>]
+sqa-tool status [--from <path>]
+```
+
+A few load-bearing details:
+
+- **`start-result` is required before `record-finding`.** Once a session
+  starts, every subagent recording findings writes into the same active
+  result file — no per-subagent paths to coordinate.
+- **`start-result` enforces a safety guard against mid-session rotation.**
+  If the previous result file has any *open* findings, `start-result`
+  refuses (exit 1) unless `--force` is passed. This catches the most
+  damaging foot-gun in the model: a wayward subagent calling
+  `start-result` during an in-progress review or resolve pass would
+  silently rotate the "active" pointer and orphan every concurrent
+  subagent's writes. Subagent prompts forbid the call; the CLI guard is
+  the belt-and-suspenders. The legitimate "I abandoned last session and
+  want a fresh one" case is unblocked by `--force` (the `sqa-review`
+  skill surfaces the refusal to the user and asks before passing it).
+- **`record-finding` enforces a safety guard against post-resolve
+  writes.** Once any finding in the active result has
+  `status == "resolved"`, `record-finding` refuses without `--force`.
+  This catches the inverse mistake: someone running review on top of a
+  partially-resolved result.
+- **`triage ignore` flips status in the same call.** No separate
+  `resolve` step is needed for ignored findings; that's the state
+  machine in § 4.3.
+- **`resolve` does not delete.** It transitions `status` to `resolved`.
+  The finding entry stays for the record.
+- **Soft category validation.** `record-finding --category=foo` accepts
+  any string, but warns to stderr if `foo` isn't in the configured list.
+
+### 5.3 Next-step hints
+
+The loop-gate commands (those a skill polls to decide what to do next)
+print a one-line `hint:` suggestion to **stderr** when called with
+`--count`. Stdout stays pure (a parseable integer) so shell capture
+(`$(sqa-tool needs-review --count)`) keeps working.
+
+Hinted commands:
+
+- `needs-review --count` — hint about dispatching `review-file` subagents
+  vs. finishing the pass.
+- `list-findings --triage=untriaged --count` — hint about dispatching
+  `triage-file` / `triage-general` vs. proceeding to resolve.
+- `list-findings --triage=auto --status=open --count` — hint about serial
+  `resolve-file` dispatch.
+- `list-findings --triage=interactive --status=open --count` — hint about
+  the interactive walk.
+
+The hints exist to keep the loop agent oriented across many iterations
+without it needing to re-read the skill markdown each turn. Other
+`list-findings --count` queries don't trigger hints (too generic to
+suggest a single next step).
+
+### 5.4 `--from` value resolution
+
+- Absolute paths and paths containing a separator are used as-is
+  (relative paths are interpreted against cwd).
+- A bare filename (no separator) is resolved against `.sqa/`.
+
+So `--from=result_2026_05_24_142318.json`,
+`--from=.sqa/result_2026_05_24_142318.json`, and
+`--from=/abs/path/to/result.json` all work.
+
+## 6. Skill / subagent layout
+
+### 6.1 Skills
+
+Three skills, each owning one user-visible verb. The `sqa-` prefix avoids
+collision with Claude Code's built-in `/review` slash command.
+
+**Installation model.** Skills and subagents are installed per-project,
+scaffolded by `sqa-tool init` into the project's `.claude/` directory.
+Each skill or subagent that has project-customizable content is split
+into two files:
+
+- A **framework file** that holds the workflow logic — what tools to
+  call, in what order, dispatch patterns.
+- A **project file** that holds project-specific configuration — the
+  quality-check command, review prompt content, triage guidelines.
 
 Layout:
 
@@ -232,277 +415,229 @@ Layout:
     SKILL.md           ← framework only
 
 .claude/agents/
-  review-file.md              ← framework
-  review-file-prompts.md      ← project-specific (the review prompt sections)
-  triage-file.md              ← framework
-  triage-file-guidelines.md   ← project-specific (Clean Code Bias, etc.)
-  resolve-file.md             ← framework
-  fix-orphans.md              ← framework
+  review-file.md             ← framework
+  review-file-prompt.md      ← project-specific (the review guidance)
+  triage-file.md             ← framework
+  triage-general.md          ← framework
+  triage-guidelines.md       ← project-specific (triage criteria)
+  resolve-file.md            ← framework
+  resolve-general.md         ← framework
 ```
 
-The framework file references its project-file sibling at runtime. For example, `sqa-review/SKILL.md` reads `sqa-review/project.md` to determine which quality-check command to run; `review-file.md` reads `review-file-prompts.md` to get the per-file review sections to walk.
+Framework files are overwritten on every `sqa-tool init` (so users get
+the latest workflow logic). Project files are preserved if they exist
+and created from bundled defaults if they don't. The discrimination rule
+for agents: files whose stem is in the canonical framework-agent set
+(`review-file`, `triage-file`, `resolve-file`, `triage-general`,
+`resolve-general`) are framework; files with a project-file suffix
+(`-prompt`, `-guidelines`) are project-specific.
 
-**Init's overwrite policy:**
+#### `sqa-review`
 
-- **Framework files** (`SKILL.md`, the named agents `review-file.md` / `triage-file.md` / `resolve-file.md` / `fix-orphans.md`): always overwritten. This lets users get the latest workflow logic when they re-run `init` after a tool upgrade.
-- **Project files** (`project.md`, `*-prompts.md`, `*-guidelines.md`): preserved if they exist; created from defaults if they don't. The user's customizations are never blown away.
+One invocation handles a complete review under normal circumstances.
 
-Discrimination rule for agents: a file in `.claude/agents/<name>.md` is framework if `<name>` is in the canonical framework-agent set (`review-file`, `triage-file`, `resolve-file`, `fix-orphans`); anything else (`review-file-prompts.md`, `triage-file-guidelines.md`, future `*-prompts` / `*-guidelines` siblings) is project. For skills, only `SKILL.md` is framework; everything else under the skill's directory is project.
+1. Read project configuration (`project.md`) for the quality-check
+   command and project conventions.
+2. Pre-review quality check. If the deterministic tools fail, stop and
+   surface — the reviewer's value is in finding things tools miss.
+3. `sqa-tool start-result` to begin a fresh session (also prints the
+   project's category list, for the skill to echo back to the user).
+4. Loop:
+   - `sqa-tool needs-review --count`. If zero, exit.
+   - Tell the user the count.
+   - Pull a batch of up to `max_agents` files via `--limit`.
+   - Spawn one `review-file` subagent per file in parallel.
+   - Wait for completion; continue.
+5. Run `sqa-tool status` and report.
 
-This separation is the answer to a tension v2 had earlier: per-project skill installation lets each project customize behavior, but tool upgrades couldn't easily refresh the framework without clobbering customizations. Splitting framework and project content removes that tradeoff — `init` becomes idempotent for upgrades.
+If the safety cap (50 batches) is hit, suggest `/loop /sqa-review`.
 
-#### `sqa-review` skill
+#### `sqa-resolve`
 
-The skill drives a self-paced loop until the work is done (or a safety cap is hit — see [§ 6](#6-dispatch--parallelism)). One invocation handles a complete review under normal circumstances.
+Two modes: `sqa-resolve auto` and `sqa-resolve interactive`.
 
-Per invocation, the skill:
+**Phase 0 — Pre-resolve baseline check.** Runs the quality-check command
+once to establish a clean baseline. The per-fix regression checks below
+only have value if the project starts green.
 
-1. **Pre-review quality check.** Runs the project's deterministic quality-check command (e.g. `./runtools.sh`, `make check`, `npm test`) **before** any LLM work. If it fails, surfaces the failures and stops — the user fixes those first. Rationale: getting deterministic-tool issues out of the way first means the review agent doesn't burn tokens flagging things a linter or type-checker would catch, and the source it reviews is in a known-good state. The check command is encoded directly in the project's copy of the skill markdown; each project edits its skill to point at the check it uses.
-2. Runs `sqa-tool orphans` (which auto-fixes the deterministic class). If any orphans remain, dispatches a `fix-orphans` subagent before proceeding.
-3. Loops:
-   - Asks `sqa-tool needs-review --count`. If zero, exit loop.
-   - Pulls a batch of up to *max_agents* files via `sqa-tool needs-review --limit=<max_agents>`.
-   - Spawns `review-file` subagents in parallel.
-   - Continues until either `needs-review --count` is zero or the per-invocation safety cap is hit.
-4. Prints summary by calling `sqa-tool status`.
+**Phase 1 — Autonomous triage** (runs in both modes). Triage is
+autonomous, not user-interactive — its purpose is to *offload* the user
+so they only engage with the `interactive`-class set later.
 
-If the safety cap is hit before completion, the skill exits with a message suggesting `/loop /sqa-review` for continuation.
+- File-scoped untriaged findings: group by `file`, dispatch one
+  `triage-file` subagent per file, in parallel batches.
+- General (`file == null`) untriaged findings: dispatch a single
+  `triage-general` subagent that handles the full set.
 
-#### `sqa-resolve` skill
+Parallel triage is **safe** because triage subagents only call
+`sqa-tool triage` — they never edit source files. Defensive comments
+(§ 6.4) come at resolve time, not triage time.
 
-Combines autonomous triage with resolution. Replaces v1's separate triage and resolve commands as a user-facing flow.
+**Phase 2 — Resolve.**
 
-Two modes: `sqa-resolve auto` and `sqa-resolve interactive`. Each runs a self-paced loop, same pattern as `sqa-review`.
+For `auto`:
+1. Serial `resolve-file` dispatch, one file at a time. Auto-resolve is
+   the one phase that writes substantively to source code, and many real
+   fixes span files; parallel `resolve-file` subagents can race or drift
+   the patterns they're meant to follow.
+2. After each `resolve-file`, run the quality-check command. If it
+   fails, fix the regression before moving on — clean attribution
+   requires the project to be green between files.
+3. After all file-scoped resolves complete, run `resolve-general` once
+   for any `auto`-class `file == null` findings. General findings often
+   update docs that describe code; doing them last means the docs are
+   written against the final state of the code.
 
-Per invocation:
+For `interactive`: walks findings sequentially in-skill (not via
+subagent). The user replies in natural language: "fix it," "skip,"
+"show diff," "commit," "this is actually auto," etc. After every fix
+that lands, the quality-check runs; regressions are addressed in the
+same conversation.
 
-1. **Phase 0 — Pre-resolve baseline check.** Runs the project's quality-check command **once** before any triage or resolution work. The per-finding regression checks below only have value if the project starts green; otherwise pre-existing failures get conflated with regressions. If the baseline fails, the skill stops and surfaces the failures.
-2. **Phase 1 — Autonomous triage.** Group untriaged findings by anchor file; dispatch `triage-file` subagents in parallel batches. Each subagent classifies all untriaged findings in its file as `auto` / `interactive` / `ignore`. Difficult calls land as `interactive`, which is the design — the user only engages with the curated `interactive` set later.
-3. **Phase 2 — Resolve the requested class:**
-   - **Auto-resolve** — group `auto`-class open findings by anchor file; dispatch `resolve-file` subagents **serially, one file at a time** (not in parallel batches like the other phases). After each subagent completes, run the quality-check command. **If it fails, fix the regressions before moving on** to the next file — clean attribution requires the project to be green between files. Auto-resolve is the only phase that writes substantively to source code, and many real fixes span files (DRY extractions, renames, SSOT consolidations); parallel `resolve-file` subagents could race on cross-file edits, produce semantic conflicts, or drift the very pattern they're meant to follow.
-   - **Interactive-resolve** — walks `interactive`-class findings sequentially with the user, multi-turn conversation per finding, in-skill. The user replies in **natural language** (not slash commands): "fix it," "skip," "show diff," "commit," "this is actually auto," etc. After every fix that lands, the quality-check runs; regressions are addressed in the same conversation before moving on. This is the user-engagement endpoint of the workflow — everything before this is autonomous.
+#### `sqa-status`
 
-The user never invokes triage as its own verb. A user who wants to plan-without-fixing inspects state via the `sqa-status` skill.
+Conversational wrapper around `sqa-tool status`. Reports counts and
+breakdowns from the active result file (or a historical one via
+`--from`). Useful for "what's the state of findings here?" and for
+planning what to triage next.
 
-State changes go through `sqa-tool triage` / `resolve`. There is no `reopen` — once a finding is resolved its anchors are stripped, so re-surfacing the concern means recording a fresh finding via the next review pass.
+### 6.2 Subagents
 
-#### `sqa-status` skill
+Each is a one-shot agent invoked by name from a user-facing skill. With
+the exception of the `*-general` pair, all are scoped to a single file so
+context-building costs are amortized across the work for that file.
 
-Conversational wrapper around `sqa-tool status`. Reports counts (new, untriaged, auto, interactive, ignored, resolved-recently) and breakdowns (by directory, by severity). Useful for "what's the state of findings here?" questions and for planning what to triage next.
+- **`review-file`** — given a file path: reads `review-file-prompt.md`
+  (the project's review guidance), calls `sqa-tool categories` to learn
+  what tags to use, reads the file, calls `findings-for-file` to surface
+  any multi-file findings other subagents have recorded in the same
+  session, walks the prompt's concerns, records findings via
+  `sqa-tool record-finding`, and calls `mark-reviewed` as the last step.
+  Does not edit source files.
 
-### 5.2 Subagents
+- **`triage-file`** — given a file path: reads `triage-guidelines.md`,
+  classifies all untriaged findings on the file as `auto` / `interactive`
+  / `ignore` via `sqa-tool triage`. When the appropriate resolution is
+  "add a defensive comment near the relevant code," it triages `auto`
+  and writes the comment-insertion instruction into the rationale. Does
+  not edit source files.
 
-Defined formally as markdown in the project's harness `agents/` directory (scaffolded by `init`). Each is a one-shot agent invoked by name from the user-facing skills. Subagents whose behavior depends on project-customizable content (review prompts, triage guidelines) are split into a framework file and a project-file sibling — see the Installation model in [§ 5.1](#51-user-facing-skills) for details. The framework file reads the project file at runtime. With the exception of `fix-orphans`, all are scoped to a single file so context-building costs are amortized across the work for that file.
+- **`resolve-file`** — given a file path: reads all `auto`-class open
+  findings whose `file` matches its assigned path or whose `related`
+  contains it. For each finding, locates the affected code via
+  `file` + `line` + `quoted_text`, applies the fix (and any defensive
+  comment from the rationale), calls `sqa-tool resolve`. May edit related
+  files for multi-file fixes — auto-resolve runs serially across files
+  precisely so this is safe.
 
-- **`review-file`** — given a file path, performs a full review. Calls `findings-for-file` to load prior context, reads the file, reads `review-file-prompts.md` to get the per-file review sections, walks them looking for new findings, refreshes/resolves prior findings as warranted, and calls `mark-reviewed` on completion. Biases toward conservative judgment ("if uncertain about staleness, keep the finding open"). Also biases toward narrow scope: anchor findings at file scope unless they're genuinely cross-cutting (not addressable by editing one file). This avoids flooding project `.sqa.md` with concerns that really belong with one file, and reduces lock contention on shared `.sqa.md` files.
-- **`triage-file`** — given a file path, autonomously classifies all untriaged findings anchored in that file (or its `.sqa.md`) as `auto` / `interactive` / `ignore`. Reads `triage-file-guidelines.md` (project-customizable) for the criteria, which includes Clean Code Bias, the pre-interactive checklist, and common traps that look interactive but are usually auto. Routes ambiguous or judgment-heavy findings to `interactive` rather than guessing. The bar for `ignore` is "specific reason not to fix" — *not* "this is minor"; small fixes default to `auto`. Persistent findings with rationale replace v1's "add a code comment to prevent re-flagging" pattern: the ignore-with-rationale itself is the durable annotation.
-- **`resolve-file`** — given a file path, applies fixes for every auto-class finding anchored in that file. Reads the file once; resolves all relevant findings; calls `sqa-tool resolve` per finding. Used only by `resolve auto`.
-- **`fix-orphans`** — handles the orphan classes the tool can't fix deterministically (anchors with no JSON, JSONs with no anchors, `related_files` referencing nonexistent paths). One-shot, no per-file scope; orphans are usually few.
+- **`triage-general`** — same job as `triage-file`, but operates on the
+  set of `file == null` findings (project-wide concerns: missing docs,
+  repo-level conventions, cross-cutting policies). Reads project-level
+  docs the findings reference for context.
 
-A subagent never edits finding JSON directly — only via `sqa-tool` calls.
+- **`resolve-general`** — applies fixes for all `auto`-class open
+  `file == null` findings. Typically docs edits, README touches,
+  module-docstring additions; occasionally a new markdown document for
+  a genuinely cross-cutting policy that has no existing home.
 
-For source files, subagents Edit directly to insert anchors at the LLM-chosen location near the relevant code (no contention: each source file is touched by only one subagent at a time).
+### 6.3 Framework / project file split
 
-For `.sqa.md` files (project- or module-scope anchors), subagents pass `--anchor=<file>.sqa.md` to `record-finding`, which inserts the anchor under `fcntl` lock — avoiding races when parallel subagents both want to add anchors to the same shared file.
+The split is the answer to: "per-project skill installation lets each
+project customize behavior, but tool upgrades need to refresh the
+framework without clobbering customizations." Framework files in
+`.claude/` are overwritten on `sqa-tool init`; project files are
+preserved if they exist and created from defaults if they don't. Init
+reports what was installed, overwritten, and preserved.
 
-Cross-cutting findings (anchors in multiple files) are an open question — for now they're handled by dispatching the resolve to the file containing the first anchor; the subagent is expected to address all relevant files. If this proves unreliable, a dedicated handler is a future addition.
+### 6.4 Defensive comments — the durable home for design intent
 
-### 5.3 Known tradeoff: section-at-a-time conversational depth
+When a finding turns out *not* to need a behavior change but you want to
+capture "we considered this and here's why we're leaving it":
 
-In v1, each per-file review section is a separate conversational turn within a stateful `ClaudeSDKClient`. This gets both prompt caching (file already in context) *and* the focusing benefit of "answer this one question now."
+- **Prefer triaging `auto`** with the fix being "add a clarifying comment
+  near the relevant code." Write the comment-insertion instruction into
+  the rationale; the resolver does the actual edit at resolve time. The
+  comment becomes part of the source and is read naturally by every
+  future reviewer (and every future maintainer).
+- **`ignore` is for findings that should produce no code change at all**
+  — genuinely wrong analyses, false positives in context, duplicates
+  already covered by another finding.
 
-Subagents are one-shot invocations; we can't replicate the per-section conversational structure. The `review-file` subagent's single prompt instructs it to walk each section sequentially with dedicated attention to each. The agent stays in one context (caching preserved), but the per-section focus comes from prompt structure rather than from the conversation pattern.
+Why prefer the comment? Source is the durable home for "why the code is
+the way it is." Future review passes start from the current source — a
+well-placed comment naturally guides the next reviewer, with no
+metadata to keep in sync.
 
-This is likely a quality regression compared to v1, though probably small. We'll accept it for v2 and revisit if measurable. The mitigations available if it matters:
+**Why this is safe to do at resolve time, not triage time.** Triage
+subagents run in parallel and don't edit source files, which is what
+makes parallel triage safe. The resolve phase is serial — one file at a
+time — so it's safe to insert comments there. That's why the comment
+instruction lives in the rationale: triage plans, resolve executes.
 
-- Tune section prompts to reinforce sequential, focused processing.
-- Reintroduce a thin SDK-backed `sqa-tool review-file` subcommand that internally uses a stateful session — localized SDK dependency, preserves the v1 conversational pattern.
+**Comment style:** length whatever the rationale needs (a sentence is
+fine, a short paragraph is fine if needed); resolve confusion, don't
+narrate development history; don't restate the code; place near the code
+it explains; deduplicate against existing nearby comments. The full
+guidance lives in `triage-guidelines.md`.
 
-The saving grace is durability: repeated reviews accumulate findings over time, so a single review's slightly-shallower depth matters less than v1's "every run rediscovers everything."
+**Cross-cutting findings always have a home.** Project-wide concerns
+(`file == null`) always land their rationale somewhere durable: the
+canonical touchpoint (public API entry, central registry); a
+module-level docstring or README; in rare cases, a new project-level
+doc (`ARCHITECTURE.md`, `docs/conventions.md`). "The next reviewer will
+just re-discover this" is not a valid resolution — every decision worth
+keeping is worth giving a durable home.
 
-## 6. Dispatch & parallelism
+## 7. Dispatch & parallelism
 
-### 6.1 Skill-driven loop
+### 7.1 Skill-driven loop
 
-Each user-facing skill drives its own loop until either the work is done or a per-invocation safety cap is hit. The structure is intentionally repetitive so the agent's reasoning load stays trivial:
+Each user-facing skill drives its own loop until either the work is done
+or a per-invocation safety cap is hit. The structure is intentionally
+repetitive so the agent's reasoning load stays trivial:
 
-1. Ask a tool for the count of remaining work (`needs-review --count`, etc.). If zero, exit.
-2. Pull a batch of up to *max_agents* items via the tool's `--limit` flag.
-3. Spawn subagents for the batch in parallel; **block until all complete** (task-completion-based, not polling).
+1. Ask a tool for the count of remaining work
+   (`needs-review --count`, etc.). If zero, exit.
+2. Pull a batch of up to `max_agents` items via the tool's `--limit`.
+3. Spawn subagents for the batch in parallel; **block until all
+   complete** (task-completion-based, not polling).
 4. Loop back to step 1, until done or cap.
 
-Each iteration's context contribution is just compact tool outputs (counts, brief summaries), so context grows slowly even across many batches. Per-invocation safety cap (e.g. 50 batches) exists as a guard against pathological cases — most invocations never hit it.
+Each iteration's context contribution is just compact tool outputs
+(counts, brief summaries), so context grows slowly even across many
+batches. Per-invocation safety cap (e.g. 50 batches) exists as a guard
+against pathological cases.
 
-State in `.sqa/` carries between invocations, so a capped exit is always recoverable.
+The `hint:` lines on stderr from gate commands (§ 5.3) keep the loop
+agent oriented even across many iterations.
 
-**Exception: auto-resolve runs serially**, not in parallel batches. See [§ 5.1 sqa-resolve](#sqa-resolve-skill) — auto-resolve is the only phase that writes substantively to source code, and parallel `resolve-file` subagents can race on cross-file edits or produce semantic conflicts. The other phases (review, triage) parallelize per the loop above.
+### 7.2 Parallel for review and triage; serial for auto-resolve
 
-**Slowest-agent-bound batches.** Each batch's wall time is determined by its slowest member — a fast subagent that finishes early sits idle while the rest of the batch completes. v1's `asyncio.Queue`-based dispatch avoided this by letting workers pull on demand, but that pattern doesn't translate cleanly to prose-driven dispatch in a skill. The harness's `run_in_background` option could in principle approximate the queue model, but the bookkeeping (track in-flight agents, dispatch a replacement on each completion) is exactly the kind of state-tracking that prose-driven control isn't reliable at. For v2 we accept the slowest-bound dynamic and let users overprovision *max_agents* to compensate — running with concurrency 8 instead of 4 amortizes a single slow file across more parallel work.
+The general rule is "parallelize phases that don't write to source code."
+Review and triage don't write to source (they only mutate the result
+file under fcntl lock), so they fan out per-file.
 
-**Why the loop body isn't itself a subagent.** The review skill's own context grows by only a few KB per iteration (compact tool outputs, brief subagent summaries), so even 50 iterations stays well under any context limit. The inner-loop reasoning ("count > 0? dispatch batch.") is trivially repetitive. Wrapping the loop body in another subagent would add an indirection without solving a real problem; if reliability ever becomes an issue at very large scale, the safety-cap + `/loop` mechanism is the right escape hatch.
+Auto-resolve writes to source. Many real fixes span files (DRY
+extractions, renames, SSOT consolidations, following established
+patterns); parallel `resolve-file` subagents can race on cross-file edits
+or drift the very pattern they're meant to follow. Serial dispatch
+preserves correctness at the cost of wall-clock time.
 
-### 6.2 Pacing for quota concerns (optional)
+### 7.3 Cross-cutting general findings
 
-For users who want to throttle for quota or time-budget reasons, `/loop` wraps the skill:
+Findings with `file == null` don't fit the per-file dispatch model. They
+get one `triage-general` and one `resolve-general` subagent — both
+operate on the full set of general findings at once. `resolve-general`
+runs *after* all file-scoped resolves complete, so general findings
+(typically docs) are written against the final state of the code, not a
+moving target.
 
-```
-/loop 1h /sqa-review        # paced for quota recovery
-```
+### 7.4 Per-invocation parameters
 
-This is *optional*. The skill works fine without it; pacing is purely a user preference for slow-roll execution.
-
-### 6.3 Per-invocation parameters
-
-`max_agents` and the safety cap are *per-invocation* values, not config. The skill prompts for `max_agents` at the start (with a sensible default) so the user can tune speed each time. The safety cap is hard-coded in the skill markdown to a generous value users rarely hit.
-
-These don't appear in `.sqa/config.toml`.
-
-### 6.4 Concurrency-safe state writes
-
-Multiple subagents run in parallel and may all call `sqa-tool mark-reviewed` (and other state-mutating commands) concurrently. The tool guarantees safety:
-
-- **`file_status.json`** — single file, easy to inspect or hand-edit. Updates are protected by an `fcntl` exclusive lock held for the read-modify-write critical section. Lock contention is negligible because the section is short (kilobytes, not megabytes).
-- **Per-finding JSON files** — concurrent `record-finding` calls allocate distinct random IDs, so no shared file is contended.
-- **Source-file anchor edits** — partitioned by file: a given source file is only touched by one subagent at a time (its assigned reviewer/resolver).
-- **`.sqa.md` edits** — could in principle be touched by multiple subagents (e.g., two parallel `triage-file` subagents both updating findings in `auth/.sqa.md`). Tool serializes these via `fcntl` lock as well.
-
-Linux/Mac/WSL only for now — `fcntl` works on all three. Windows-native support is out of scope.
-
-## 7. Deterministic tool (`sqa-tool`)
-
-A small Python CLI program. Per-finding JSON files don't need a database driver, but Python is still the most ergonomic choice for the orchestration logic — git interaction, schema enforcement, glob matching, anchor regex per language. Bash is used only where it's genuinely cleaner (e.g., wrapping `git hash-object --stdin-paths`).
-
-### 7.1 Subcommand reference
-
-```
-sqa-tool init
-    Pre-checks: refuses to run if cwd is not a git repository, or if
-    the repository has no commits yet (sqa-tool's change detection
-    relies on git-tracked files; both cases produce an actionable
-    error message pointing at git init / git commit).
-
-    On first run, creates .sqa/ with default config.toml, empty
-    findings/ dir, and empty file_status.json. On re-run, leaves
-    existing .sqa/ state alone.
-
-    Always (re-)installs the framework files into .claude/skills/ and
-    .claude/agents/, overwriting prior versions so the user picks up
-    the latest workflow logic. Project-specific files (project.md,
-    *-prompts.md, *-guidelines.md) are preserved if they already
-    exist; created from defaults if they don't. Init reports which
-    files were installed, overwritten, and preserved.
-
-    See § 5.1 Installation model for the full layout and the
-    framework/project distinction.
-
-    Logs an informational message about whether to gitignore
-    .sqa/findings/ for security-sensitive projects (see § 4.6).
-
-sqa-tool needs-review [--count] [--limit N]
-    List files (from configured includes/excludes ∩ git-tracked files)
-    whose current blob hash differs from the recorded last-reviewed
-    hash. Prints one path per line.
-    --count   Print just the integer count (for skill-loop guards).
-    --limit N Print at most N entries (for batch dispatch).
-
-sqa-tool mark-reviewed <path>
-    Record the file's current blob hash as last-reviewed (updates
-    file_status.json under fcntl lock). Safe for concurrent callers.
-
-sqa-tool findings-for-file <path>
-    Print findings whose anchor is in <path> OR whose anchor is in any
-    ancestor .sqa.md AND whose related_files matches <path> (literal
-    or glob). JSON array on stdout. Used by review subagents.
-
-sqa-tool list-findings [path] [-r] [--triage=...] [--status=...] \
-                           [--count] [--limit N]
-    Browse / query. Path optional; -r for recursive descent. Filters
-    optional. JSON array on stdout (or count integer with --count).
-    --count   Print just the integer count.
-    --limit N Print at most N findings.
-
-sqa-tool show-finding <id>
-    Pretty-printed single finding.
-
-sqa-tool status [path]
-    Report counts (untriaged, auto, interactive, ignored, resolved)
-    and breakdowns (by directory, by severity). Path scopes the report
-    to a subtree. Backs the `status` skill and is also useful directly.
-
-sqa-tool record-finding \
-    --message=<text> --severity=<info|warning|error> \
-    [--anchor=<file>] [--related=<file>...] [--rationale=<text>]
-    Allocate a fresh ID and write the JSON file. Prints the new ID
-    on stdout.
-
-    --anchor (optional): if provided, the tool inserts the anchor
-    comment into the named file under fcntl lock. Use this for any
-    SHARED file (project or module .sqa.md) where parallel
-    subagents may contend for writes. The tool picks the comment
-    syntax for the file's language.
-
-    --anchor omitted: the caller (LLM) is responsible for inserting
-    `# sqa: <id>` (or per-language equivalent) into the source file
-    via Edit, near the relevant code. Use this for source files where
-    the LLM has location-choice judgment and there's no contention
-    (each source file is touched by only one subagent at a time).
-
-    For un-commentable files (JSON, binary, etc.), pass
-    --anchor=<dir>/.sqa.md (the nearest enclosing) and list the
-    actual file path in --related.
-
-    --related captures the files the finding is ABOUT. Used by
-    findings-for-file (to surface higher-scope findings to file
-    reviews) and orphans (to detect stale references after renames).
-
-    Findings whose anchors are not actually inserted are flagged by
-    `orphans` on the next review.
-
-sqa-tool triage <id> auto|interactive|ignore --rationale=<text>
-    Updates the finding's triage classification and rationale. The
-    rationale is fully replaced (the LLM is responsible for writing
-    coherent prose).
-
-sqa-tool resolve <id> --rationale=<text>
-    Strips anchors from source/`.sqa.md` files referencing the finding,
-    then DELETES the finding's JSON file. The rationale is echoed back
-    to the caller as confirmation but not persisted — the audit trail
-    of "what was resolved and why" lives in the user's git commit
-    message rather than in a transient JSON field. There is no
-    "reopen": re-surfacing a previously-resolved concern means
-    recording a fresh finding.
-
-sqa-tool orphans
-    Detects rot in finding/anchor consistency. Some classes are fixed
-    deterministically by the tool itself; others are reported for
-    human/LLM judgment.
-
-    Auto-fixed:
-      - Empty .sqa.md files → deleted.
-      - Source-file anchor whose file isn't in related_files
-        → file added to related_files.
-
-    Reported (require judgment):
-      - Findings whose ID has no anchor anywhere.
-      - Anchors in source/.sqa.md whose ID has no JSON file.
-      - Findings whose related_files contains nonexistent paths.
-
-    Run implicitly at the start of each review session.
-
-sqa-tool diff-since-review <path>
-    Print git diff of <path> against its last-reviewed blob. Used by
-    review subagents that want diff-scoped review.
-```
-
-### 7.2 Config file (`.sqa/config.toml`)
-
-```toml
-[files]
-include = ["src/**/*.py"]
-exclude = ["src/**/*_test.py"]
-```
-
-That's it. No `[agent]` block (model selection is harness-native), no `[tools]` block (skills invoke project-local checks directly via Bash), no `[dispatch]` block (per-invocation parameters come from skill arguments or interactive prompts; see [§ 6.3](#63-per-invocation-parameters)).
+`max_agents` and the safety cap are per-invocation values, not config.
+The skill prompts for `max_agents` at the start (with a sensible default,
+typically 4) so the user can tune speed each time. The safety cap is
+hard-coded in the skill markdown to a generous value users rarely hit.
 
 ## 8. Workflows
 
@@ -511,102 +646,126 @@ That's it. No `[agent]` block (model selection is harness-native), no `[tools]` 
 ```bash
 cd <project>                       # must be a git repo with at least one commit
 sqa-tool init
-$EDITOR .sqa/config.toml           # configure includes/excludes
-# Edit the project's copy of sqa-review / sqa-resolve skill markdown
+$EDITOR .sqa/config.toml           # configure includes/excludes; optionally tweak categories
+# Edit .claude/skills/sqa-review/project.md and .claude/skills/sqa-resolve/project.md
 # to point at the project's quality-check command (e.g. ./runtools.sh).
-# init logs a note about gitignoring .sqa/findings/ if appropriate.
 ```
 
-`init` refuses to run if the directory isn't a git repository, or if the repo has no commits yet — both cases produce an actionable error message rather than silently creating broken state. After the pre-checks pass, `init` scaffolds:
-- `.sqa/` for project state (config, findings, file_status).
-- `.claude/skills/<name>/SKILL.md` and `.claude/agents/<name>.md` for the user-facing skills and subagents (per-project copies, customizable).
+`init` refuses to run if the directory isn't a git repository, or if the
+repo has no commits yet — both cases produce an actionable error message
+rather than silently creating broken state. After the pre-checks pass,
+`init` scaffolds:
 
-### 8.2 Routine review
+- `.sqa/` for project state (`config.toml`, `file_status.json`).
+- `.claude/skills/<name>/SKILL.md` and `.claude/agents/<name>.md` for the
+  user-facing skills and subagents (per-project copies, customizable).
 
-User invokes the `sqa-review` skill. The skill drives its own loop:
+`init` also warns about any artifacts from earlier versions of the tool
+(`.sqa/findings/`, `.sqa.md` files, old agent filenames). It surfaces
+them so the user can clean up at their own pace, but never touches them
+automatically.
 
-1. Runs the project's quality-check command (encoded in the skill markdown). If it fails, stops and surfaces the failures — review proceeds only against a clean baseline.
-2. Runs `sqa-tool orphans` (auto-fixes deterministic class). Dispatches `fix-orphans` subagent if any remain.
-3. Loops: fetches a batch of up to *max_agents* files via `needs-review --limit`, dispatches `review-file` subagents in parallel, repeats until `needs-review --count` returns zero (or safety cap is hit).
-4. Reports summary via `sqa-tool status`.
+### 8.2 Review pass
 
-Under normal circumstances, one invocation handles a complete review. The user wraps with `/loop /sqa-review` only if they want quota pacing.
+User invokes `/sqa-review`. The skill drives its own loop (§ 6.1
+`sqa-review`):
 
-A small follow-up review a day later, when only `auth/login.py` has changed: the skill picks up only that file. The subagent loads prior findings (file-scope from the file itself, plus module-scope from `auth/.sqa.md` whose `related_files` matches `auth/login.py`, plus project-scope likewise). It re-evaluates each, refreshes rationale where needed, records new findings if any, and marks the file reviewed.
+1. Read `project.md`; run the quality-check command; stop if it fails.
+2. `sqa-tool start-result` — fresh session.
+3. Pick `max_agents`.
+4. Loop: count → batch → parallel `review-file` subagents → repeat.
+5. Report via `sqa-tool status`.
+
+A small follow-up review later, when only `src/auth/login.py` has
+changed: the skill picks up only that file. The `review-file` subagent
+reads the file, walks the project's review guidance, records new
+findings via `sqa-tool record-finding` (with `--file`, `--line`,
+`--quoted-text`, `--category`, optional `--related` for multi-file
+concerns), and marks the file reviewed.
 
 ### 8.3 Resolve
 
-User invokes `sqa-resolve auto` or `sqa-resolve interactive`. The skill:
+User invokes `/sqa-resolve auto` or `/sqa-resolve interactive`. Phases 0,
+1, 2 per § 6.1 `sqa-resolve`.
 
-1. **Phase 0** — runs the project quality-check once to establish a clean baseline. Stops if it fails.
-2. **Phase 1** — autonomously triages any untriaged findings via parallel `triage-file` subagents.
-3. **Phase 2** — resolves the requested triage class:
-   - **`auto`** — dispatches `resolve-file` subagents serially (one file at a time), running the quality-check after each. Any regression is fixed before the next file starts.
-   - **`interactive`** — walks the interactive-class set with the user in natural-language conversation per finding; quality-check runs after every fix that lands, with regressions addressed in the same conversation.
+For `auto`: file-scoped resolves run serially (with quality-check after
+each); then `resolve-general` runs once for any project-wide auto
+findings.
 
-The user never invokes triage as its own verb. To plan-without-fixing, use `sqa-status` instead.
+For `interactive`: the skill walks the user through the
+`interactive`-class findings sequentially, in natural-language
+conversation per finding; quality-check runs after every fix that lands;
+regressions are addressed in the same conversation before advancing.
 
-### 8.4 Branch divergence on finding IDs
-
-With random base32 IDs, the collision probability across branches is negligible for any realistic project size (5-character base32 = ~33M possible IDs; for a project with 1000 findings, the probability of any cross-branch collision is on the order of 0.001%). Two branches creating findings in parallel should merge without conflict.
-
-If a collision does occur, it manifests as a normal git conflict on `<id>.json` and is resolved by deleting one of the colliding files, re-running `record-finding` to get a fresh ID, and updating the anchor comment. A `sqa-tool reconcile` subcommand for automated handling is deferred until this becomes painful in practice.
-
-### 8.5 Refactors and renames
-
-| Action | Behavior |
-|---|---|
-| `git mv foo.py bar.py` | File-scope anchors travel with content. No tool action needed. |
-| `git mv auth/ identity/` | `identity/.sqa.md` and all anchors travel together. `related_files` containing `auth/...` becomes stale; `orphans` flags it; LLM updates on next review. |
-| Delete `foo.py` | Anchors vanish. `orphans` reports the orphaned findings; user or LLM closes them or relocates. |
-| Refactor splits a directory | LLM-assisted: surface `.sqa.md` to the user; they decide which findings move where. |
+The user never invokes triage as its own verb. To plan-without-fixing,
+they use `/sqa-status`.
 
 ## 9. Multi-language support
 
-The per-language comment table in [§ 4.1](#41-anchors) is canonical. The tool consults it in two places:
+The reviewer doesn't care what language the source files are in — it
+reads, the prompt drives, the agent writes findings. There's no
+per-language code path in the tool (no anchor comment table, no
+language-specific parsers). Defensive comments are inserted in whatever
+syntax the file uses; the agent reads the file and matches.
 
-- `record-finding`: pick the right comment syntax to insert.
-- `orphans` and `findings-for-file`: pick the right regex for grep.
+## 10. What we don't do
 
-New languages are added by extending the table — no code beyond a config map.
+- **No persistent findings across sessions.** Each `/sqa-review`
+  creates a fresh result file; findings recorded one session don't
+  carry into the next. The substitute is defensive comments in source
+  (§ 6.4) — design intent that's worth remembering goes in the code,
+  where the next reviewer naturally reads it.
+- **No in-source anchor comments.** Findings reference code by `file`
+  + `line` + `quoted_text`, not by an inserted comment in the source.
+- **No web UI or dashboard.** Findings are inspected via CLI, git, and
+  the result-file JSON.
+- **No cross-repo aggregation.**
+- **No automated migration of state from earlier tool versions.** `init`
+  warns about legacy artifacts but doesn't touch them.
 
-## 10. Open questions
+## 11. Open questions / future directions
 
-These are deliberately deferred; first implementation can pick reasonable defaults and revisit.
+- **Cross-cutting auto-resolve dispatch.** Findings whose anchor spans
+  multiple files are handled by dispatching to the `resolve-file`
+  subagent for the primary file (with the `related` files in scope).
+  This relies on the subagent doing the right thing across files; if it
+  proves unreliable, a dedicated cross-cutting handler is a future
+  addition.
+- **Result-file retention.** Result files accumulate one-per-session.
+  No built-in pruning; users gitignore them and clean up by hand. If
+  disk usage becomes an issue, a `sqa-tool prune --older-than=30d` is
+  the natural addition.
+- **Per-aspect review subagents.** Currently one `review-file` subagent
+  per file does all categories at once. A per-aspect fan-out (one
+  Security agent across many files, etc.) might produce deeper findings
+  per category at higher dispatch cost. Worth experimenting if review
+  quality plateaus.
+- **Persistent-finding opt-in.** If defensive comments turn out
+  insufficient (specific failure mode: persistent "already-considered"
+  findings get re-flagged every review and the re-triage cost genuinely
+  hurts), a `--persistent` opt-in mode at init time could re-introduce
+  per-finding records and in-source anchors. Not designed yet; deferred
+  until real usage motivates it.
 
-- **Cross-cutting findings and `related_files` globs.** Should we allow patterns like `**/*.py`, or require explicit file lists? Globs are more powerful but harder to reason about. Start with explicit lists; add globs if needed.
-- **Cross-cutting auto-resolve.** Findings whose anchor spans multiple files are dispatched (today) to a `resolve-file` subagent for one of those files, which is expected to address all relevant files. If this proves unreliable, a dedicated cross-cutting handler is a future addition.
-- **Diff-scoped review prompts.** Should we ship a default review prompt that runs only against `diff-since-review`, in addition to whole-file? Deferred until we see how often it's wanted.
-- **`reconcile` subcommand for ID collisions.** Deferred; collisions should be vanishingly rare with random IDs.
-- **`--private` finding flag and severity-routed private storage.** Deferred until real users surface the need.
-- **Section-at-a-time review quality.** May need measurement once we have v2 running side-by-side with v1. If quality regression is meaningful, the SDK-backed escape hatch in [§ 5.3](#53-known-tradeoff-section-at-a-time-conversational-depth) is available.
-- **Skill prompts.** The actual content of the review/resolve/status skill markdown is left to implementation. The interfaces above (which tools they call, what state they touch) constrain the prompts adequately.
+## Appendix: bundled defaults
 
-## 11. Out of scope for v2
+Files installed by `sqa-tool init` (full paths under the project root):
 
-- A web UI / dashboard.
-- Cross-repo aggregation.
-- Migration from v1 result files. Projects that use v1 keep v1; new projects use v2.
-- Model-selection or thinking-budget configuration inside `.sqa/config.toml`. These come from the harness.
+```
+.sqa/config.toml                                # files globs + categories
+.sqa/file_status.json                           # empty; updated by mark-reviewed
 
----
+.claude/skills/sqa-review/SKILL.md              # framework (overwritten)
+.claude/skills/sqa-review/project.md            # project (preserved)
+.claude/skills/sqa-resolve/SKILL.md             # framework
+.claude/skills/sqa-resolve/project.md           # project
+.claude/skills/sqa-status/SKILL.md              # framework only
 
-## Appendix: comparison to v1
-
-| Concern | v1 | v2 |
-|---|---|---|
-| Finding persistence | Per-run `result_<ts>.json`; lost on next run | Per-finding `.sqa/findings/<id>.json`; durable |
-| Anchoring | None | `# sqa: <id>` comments + `.sqa.md` for higher scopes |
-| Triage memory | Lost on next review | Carried forward; LLM sees prior findings during review |
-| Re-review trigger | File blob changed | Same; but anchors prevent re-rediscovery |
-| Orchestration | Python harness on Claude Agent SDK | Skills + small CLI; harness-native |
-| Model selection | `[agent]` config block | Harness-native |
-| User-facing verbs | `review`, `triage`, `resolve` | `sqa-review`, `sqa-resolve`, `sqa-status` |
-| Per-file review structure | One stateful SDK session, section-per-turn | One subagent invocation, sections walked in-prompt |
-| Parallelism | SDK-level `asyncio.gather` over a queue | Skill-driven subagent fan-out, bounded — parallel for review and triage; serial for auto-resolve to avoid cross-file edit races |
-| Quality-check integration | Configured via `[tools]` block; runs as part of review and resolve verification | Pre-baseline check before review and resolve; per-finding regression check during resolve (auto and interactive); command lives in the skill markdown, not config |
-| Triage philosophy | Stateless guidelines; comments added to suppress recurring findings | Persistent findings replace defensive comments; ignore-with-rationale is itself the durable annotation |
-| Large-repo pacing | All-in-one invocation | Cron/loop wrapper of bounded invocations |
-| Storage of finding text | In-repo (single result file) | In-repo (per-finding JSON), tracked by default |
-| History/audit | Ad-hoc | `git log` on the finding JSON |
-| Finding IDs | Sequential ints (per-run) | Short random base32 (5 chars), durable, branch-safe |
+.claude/agents/review-file.md                   # framework
+.claude/agents/review-file-prompt.md            # project
+.claude/agents/triage-file.md                   # framework
+.claude/agents/triage-general.md                # framework
+.claude/agents/triage-guidelines.md             # project
+.claude/agents/resolve-file.md                  # framework
+.claude/agents/resolve-general.md               # framework
+```

@@ -1,53 +1,108 @@
 ---
 name: review-file
-description: Review one source file with awareness of prior findings. Records new findings, refreshes/resolves prior ones, and marks the file reviewed.
-tools: Read, Edit, Bash, Grep, Glob
+description: Review one source file. Records findings via `sqa-tool record-finding` and marks the file reviewed.
+tools: Read, Bash, Grep, Glob
 ---
 
 # review-file (framework)
 
 You are reviewing one file in the user's codebase.
 
-> **Framework file.** This file is overwritten by `sqa-tool init` on
-> upgrade. The review prompt sections — what concerns to look for in each
-> file — live in `.claude/agents/review-file-prompts.md` and are
-> preserved across upgrades. **Do not edit this framework file** to
-> change review prompts — edit `review-file-prompts.md` instead.
+> **Framework file.** Overwritten by `sqa-tool init` on upgrade.
+> Per-project review guidance lives in `.claude/agents/review-file-prompt.md`
+> and is preserved across upgrades. **Do not edit this framework file**
+> to change the review prompt — edit `review-file-prompt.md` instead.
 
 ## Inputs
 
-The skill that invoked you provided one argument: a project-relative file path (e.g. `src/auth/login.py`). Treat that as **the file under review**.
+The skill that invoked you provided one argument: a project-relative file
+path (e.g. `src/auth/login.py`). Treat that as **the file under review**.
+
+## Hard rules
+
+- **Do NOT call `sqa-tool start-result`.** Your parent skill already
+  started the session before dispatching you; calling `start-result`
+  again would rotate the "active" result file out from under every
+  other subagent in this batch and orphan their writes. The CLI now
+  refuses this case, but the rule is here so you don't try.
+- **Do not edit source files.** Your job is to record findings. The
+  resolver edits source at resolve time.
+- **Do not call `sqa-tool resolve` or `sqa-tool triage`.** That's the
+  resolve/triage subagents' job, not yours.
 
 ## Workflow
 
-1. **Load review prompt sections.** Read `.claude/agents/review-file-prompts.md`. Each numbered/headed section is a separate review concern that this subagent will walk through after reading the file. Note the project-specific section at the bottom (if any).
+Walk these steps in order:
 
-2. **Load prior findings in scope.** Run `sqa-tool findings-for-file <path>`. This returns a JSON array of findings already known for this file (its own anchors plus any module/project-scope findings whose `related_files` matches it). Read every entry — message, severity, triage, status, rationale — before reading the file itself.
+1. **Read the review prompt.** Open `.claude/agents/review-file-prompt.md`.
+   It contains the project's review-quality guidance, structured by topic.
+   The prompt itself is tool-agnostic; it doesn't tell you *how* to record
+   findings — that's this file's job.
 
-3. **Read the file under review.** Use the Read tool. You may also Read related/imported files for context if needed.
+2. **Fetch the project's category list.** Run `sqa-tool categories`. The
+   command prints one category name per line (e.g. `dry-ssot`,
+   `interfaces`, `error-handling`). You'll tag each finding you record
+   with the closest matching category from this list.
 
-4. **For each prior finding**, decide:
-   - **Still applies, no change needed** — leave alone.
-   - **Still applies, rationale is stale** — call `sqa-tool triage <id> <existing_decision> --rationale="updated text..."` (rationale is fully replaced, so write it as a coherent current-state summary).
-   - **No longer applies** (the underlying issue is fixed or the code has moved past it) — call `sqa-tool resolve <id> --rationale="why this is no longer applicable"`. This strips the anchor from source and deletes the finding JSON.
-   - **Now relevant in a different way** — close and re-record if it's substantively different. Otherwise update rationale.
+3. **Read the file under review.** Read related/imported files for context
+   as needed (Read, Grep, Glob — you have read-only access to the
+   codebase).
 
-   Bias toward conservatism: if uncertain whether a prior finding still applies, leave it open and note the uncertainty in the rationale.
+4. **Surface any cross-file findings already known.** Run
+   `sqa-tool findings-for-file <path>`. This returns findings whose
+   `file` is your assigned path **or** whose `related` list includes it
+   — typically multi-file findings recorded by another `review-file`
+   subagent earlier in the same session. Don't re-flag the same concern;
+   if an existing finding's `message` already covers it, move on.
 
-5. **Walk the review prompt sections** loaded in step 1, looking for new findings. For each new finding:
-   - **Anchor scope decision:** prefer file scope (insert anchor in the file under review). Only use module/project scope if the finding is genuinely cross-cutting and not addressable by editing one file.
-   - For file-scope findings: call `sqa-tool record-finding --message="..." --severity=... --related=<path>` (omit `--anchor` — you'll insert it in the next step). Capture the returned ID.
-   - Use Edit to insert `# sqa: <id>` (or per-language equivalent) into the file at a location near the relevant code. Multiple anchors can share a line: `# sqa: ABC, XYZ`.
-   - For module/project-scope findings (rare): call `sqa-tool record-finding --message="..." --severity=... --anchor=<dir>/.sqa.md --related=<files...>`. The `--anchor` flag tells the tool to insert under lock — don't use Edit for these.
+5. **Walk the review prompt's topics, recording new findings.** For each
+   concern you identify in the file, call:
 
-6. **Mark the file reviewed:** `sqa-tool mark-reviewed <path>`. This is the LAST step, after all anchors are inserted.
+   ```
+   sqa-tool record-finding \
+       --message="<the finding>" \
+       --severity=<info|warning|error> \
+       --file=<path under review> \
+       --line=<line number, optional> \
+       --quoted-text="<short excerpt of the offending code, optional>" \
+       --category=<one of the names from step 2> \
+       [--related=<other affected file> ...]
+   ```
 
-## Conventions for the walk
+   Notes on each flag:
+   - **`--message`** — the finding itself, in plain prose. Specific
+     enough that a future triager can act on it without re-reading the
+     code.
+   - **`--severity`** — `info` for nits, `warning` for genuine concerns,
+     `error` for likely defects.
+   - **`--file`** — almost always the path you were assigned. Omit
+     entirely only for project-wide concerns that don't anchor to any
+     single file (those are rare here; you generally don't surface them
+     from a per-file review).
+   - **`--line`** — the line in `--file` where the issue is. Optional;
+     omit for whole-file concerns.
+   - **`--quoted-text`** — a short excerpt (≤ ~3 lines) of the offending
+     code. Helps the resolver disambiguate later if earlier fixes have
+     shifted line numbers. Omit if the finding is about something
+     missing.
+   - **`--category`** — the closest matching name from
+     `sqa-tool categories`. Unknown values are accepted with a warning;
+     pick from the list when you can.
+   - **`--related`** — repeat for each other file the finding genuinely
+     touches (e.g. a DRY violation spanning two files, or a public
+     interface change with all its callers). Use sparingly — a
+     single-file concern doesn't need this.
 
-- Walk one section at a time; don't conflate concerns across sections.
-- Be willing to say "no findings in this section." False positives are worse than false negatives at file scope, since each finding will be triaged and may surface to the user.
-- Anchor findings at file scope unless they're genuinely cross-cutting (not addressable by editing one file). This avoids flooding project `.sqa.md` with concerns that really belong with one file, and reduces lock contention on shared `.sqa.md` files.
+   You have all categories at once and tag each finding rather than
+   walking categories serially. False positives are worse than false
+   negatives — be willing to say "no findings in this category."
+
+6. **Mark the file reviewed:** `sqa-tool mark-reviewed <path>`. This is
+   the **last** step, after every finding is recorded. It records the
+   file's current git blob hash so subsequent review passes skip it
+   until it changes.
 
 ## After
 
-Once anchors are inserted and `mark-reviewed` is called, your work is done. Return a brief summary to the parent skill: file path reviewed, count of new findings, count of prior findings refreshed/resolved.
+Return a brief summary to the parent skill: file path reviewed, count of
+findings recorded, any notable patterns.

@@ -1,13 +1,13 @@
-# Reviewer v2 (sqa-tool)
+# sqa-tool
 
-A code reviewer built on Claude Code skills and a small deterministic CLI, with **persistent findings** anchored in source by short comment tags.
+A code reviewer built on Claude Code skills and a small deterministic CLI.
 
-The two structural shifts from [v1](https://github.com/christian-trott-yourekatech/Reviewer):
+The shape:
 
-1. **Findings persist across runs.** Each finding is a small JSON file under `.sqa/findings/`, anchored in source by a short comment like `# sqa: K7M3X`. Triage decisions and resolution rationale carry forward — the same issue isn't rediscovered and re-triaged on every review.
-2. **Skills + deterministic tools** replace the v1 Python-SDK harness. The agentic surface is a small cluster of Claude Code skills (`/sqa-review`, `/sqa-resolve`, `/sqa-status`); load-bearing bookkeeping (change detection, finding storage, schema enforcement) lives behind the `sqa-tool` CLI.
+1. **Skills + deterministic tools.** The agentic surface is a small cluster of Claude Code skills (`/sqa-review`, `/sqa-resolve`, `/sqa-status`); load-bearing bookkeeping (change detection, finding storage, state-machine enforcement) lives behind the `sqa-tool` CLI.
+2. **Per-run result files.** Each review session writes a single `.sqa/result_<timestamp>.json` containing every finding, triage decision, rationale, and status transition. No persistent finding store across sessions, no in-source anchor comments. Design intent that should outlive a single review is captured as **defensive comments in source**, written at resolve time.
 
-See [`Docs/design.md`](./Docs/design.md) for the full design rationale.
+See [`Docs/design.md`](./Docs/design.md) for the full design.
 
 ## Installation
 
@@ -36,9 +36,10 @@ sqa-tool init
 ```
 
 This:
-- Creates `.sqa/` (project state — config, findings, file-status hashes).
-- Scaffolds `.claude/skills/sqa-{review,resolve,status}.md` and `.claude/agents/{review-file,triage-file,resolve-file,fix-orphans}.md` so Claude Code finds them.
-- Logs a note about gitignoring `.sqa/findings/` if you have security concerns.
+- Creates `.sqa/` (project state — `config.toml`, `file_status.json`, and result files once you start a session).
+- Scaffolds `.claude/skills/sqa-{review,resolve,status}/SKILL.md` and `.claude/agents/{review-file,triage-file,resolve-file,triage-general,resolve-general}.md` so Claude Code finds them.
+- Recommends gitignoring `.sqa/result*.json` and `.sqa/logs/` (result files quote source; the per-session audit value is lower than tracked files would warrant).
+- Warns about any leftover artifacts from an earlier install of the tool (`.sqa/findings/`, `.sqa.md` files, old agent filenames) — it surfaces them so you can clean up at your own pace, but doesn't touch them automatically.
 
 Then edit `.sqa/config.toml` to point at the files you want reviewed:
 
@@ -46,9 +47,13 @@ Then edit `.sqa/config.toml` to point at the files you want reviewed:
 [files]
 include = ["src/**/*.py"]
 exclude = ["src/**/*_test.py"]
+
+[categories]
+# Defaults are reasonable; customize for your project's conventions.
+list = ["dry-ssot", "interfaces", "logic", "comments", "error-handling", "kiss-yagni", "security", "project-specific"]
 ```
 
-If your project has a quality-check command (`./runtools.sh`, `make check`, `npm test`), edit `.claude/skills/sqa-review.md` and `.claude/skills/sqa-resolve.md` to invoke it where indicated.
+If your project has a quality-check command (`./runtools.sh`, `make check`, `npm test`), edit `.claude/skills/sqa-review/project.md` and `.claude/skills/sqa-resolve/project.md` to invoke it where indicated.
 
 ## Workflow
 
@@ -56,10 +61,10 @@ Inside a Claude Code session in the project:
 
 | Slash command | What it does |
 |---|---|
-| `/sqa-review` | Run a review pass. Dispatches one `review-file` subagent per file that has changed since last review. Findings are recorded with anchors in the relevant files. |
-| `/sqa-resolve auto` | Autonomously triage any new findings, then auto-fix the `auto`-class ones. |
-| `/sqa-resolve interactive` | Triage new findings, then walk the `interactive`-class set with the user, fixing each in a multi-turn conversation. |
-| `/sqa-status` | Report counts and breakdowns of findings. |
+| `/sqa-review` | Run a review pass. Creates a fresh `.sqa/result_<timestamp>.json`, then dispatches one `review-file` subagent per file that has changed since last review. Findings are recorded to the result file. |
+| `/sqa-resolve auto` | Autonomously triage any untriaged findings (parallel `triage-file` / `triage-general`), then auto-fix the `auto`-class ones (serial `resolve-file`, then `resolve-general` last). |
+| `/sqa-resolve interactive` | Triage as above, then walk the `interactive`-class set with the user, fixing each in a multi-turn conversation. |
+| `/sqa-status` | Report counts and breakdowns of findings from the active result file. |
 
 For very large repos or quota-paced execution, wrap with `/loop`:
 
@@ -73,57 +78,74 @@ For very large repos or quota-paced execution, wrap with `/loop`:
 The `sqa-tool` CLI is the deterministic backend the skills call. You can also use it directly.
 
 ```
-sqa-tool init                                 # Scaffold .sqa/ and .claude/
-sqa-tool needs-review [--count] [--limit N]   # List/count files needing review
-sqa-tool mark-reviewed <path>                 # Record current blob hash
-sqa-tool findings-for-file <path>             # Findings in scope for a file
-sqa-tool list-findings [--triage=...] [--status=...] [--count] [--limit N]
-sqa-tool show-finding <id>
-sqa-tool status                               # Counts and breakdowns
-sqa-tool record-finding --message=... --severity=... [--anchor=<file>] [--related=<file>...] [--rationale=...]
+# Session lifecycle
+sqa-tool init                                         # Scaffold .sqa/ and .claude/
+sqa-tool start-result                                 # Begin a review session (prints path + categories)
+sqa-tool active-result                                # Print path of most-recent result file
+sqa-tool categories                                   # Print configured category list
+
+# Change detection
+sqa-tool needs-review [--count] [--limit N]           # List/count files needing review
+sqa-tool mark-reviewed <path>                         # Record current blob hash
+sqa-tool diff-since-review <path>                     # Diff vs last-reviewed blob
+
+# Findings (operate on the active result by default; --from <file> reads a historical one)
+sqa-tool record-finding --message=... --severity=... \
+    --file=<path> [--line=N] [--quoted-text=...] \
+    [--category=...] [--related=<path> ...] [--rationale=...]
 sqa-tool triage <id> auto|interactive|ignore --rationale=...
 sqa-tool resolve <id> --rationale=...
-sqa-tool orphans                              # Detect/fix anchor-finding inconsistencies
-sqa-tool diff-since-review <path>             # Diff vs last-reviewed blob
+sqa-tool show-finding <id>                            # Print one finding as JSON
+sqa-tool list-findings [--triage=...] [--status=...] [--count] [--limit N] [--from <path>]
+sqa-tool findings-for-file <path> [--from <path>]
+sqa-tool status [--from <path>]                       # Counts and breakdowns
 ```
 
 Run `sqa-tool <command> --help` for full options.
 
-## Anchors
+### Finding state machine
 
-Findings live in source as short comment tags:
+Every finding has a `triage` decision and a `status`:
 
-```python
-# sqa: K7M3X
-def authenticate(user, pwd):
-    ...
-```
+| triage / status | meaning |
+|---|---|
+| `null` + `open` | freshly recorded, not yet triaged |
+| `auto` + `open` | pending autonomous fix |
+| `interactive` + `open` | pending discussion with the user |
+| `ignore` + `resolved` | bookkeeping close, no code change |
+| `auto` + `resolved` | fixed by `resolve-file` / `resolve-general` |
+| `interactive` + `resolved` | fixed during the interactive walk |
 
-Multiple findings can share a line: `# sqa: K7M3X, A4B9P`.
+Key transitions:
+- `sqa-tool triage <id> ignore` flips `status` to `resolved` in the same call (ignore is a terminal close).
+- Re-triaging an `ignore + resolved` finding to `auto` / `interactive` flips status back to `open` — un-ignoring is permitted.
+- Re-triaging a finding that's already been *action*-resolved (auto/interactive + resolved) is **rejected** — no reopen. Re-surfacing the concern means recording a fresh finding on the next review.
 
-For module- and project-level findings (cross-cutting concerns), anchors live in `.sqa.md` files at the relevant directory:
+### Result files
 
-```markdown
-<!-- sqa: K7M3X -->
-<!-- sqa: A4B9P -->
-```
+Each `/sqa-review` invocation creates one `.sqa/result_<timestamp>.json`. The file is the audit record for that session: findings recorded by the review, decisions made by triage, rationales added by resolve, status transitions. Nothing is deleted — `resolve` flips `status`; the entry stays for the record.
 
-The `.sqa.md` file at any directory level scopes its findings to that directory and its descendants.
+The "active" result file is the most recent one. Mutating commands (`record-finding`, `triage`, `resolve`) operate on it; read commands default to it but accept `--from <path>` to inspect an older session (historical results are **read-only**).
 
-## Anchor IDs
-
-5-character base32 strings (e.g. `K7M3X`). ~33M possible IDs; collision probability for any realistic project is negligible. Random allocation; the tool retries on the rare file-exists collision.
+`record-finding` enforces a safety guard: once any finding in the active result has been resolved, new findings can't be appended without `--force`. This catches the "I forgot to `start-result` between sessions" mistake.
 
 ## Storage
 
 ```
 .sqa/
-  config.toml         # include/exclude globs
-  file_status.json    # last-reviewed blob hash per file (fcntl-locked)
-  findings/<id>.json  # one file per finding
+  config.toml                    # include/exclude globs + category list
+  file_status.json               # last-reviewed blob hash per file (fcntl-locked)
+  result_<timestamp>.json        # one per /sqa-review session
+  logs/                          # optional, gitignored
 ```
 
-Findings are tracked by git by default — the version-controlled audit trail is the primary value. For security-sensitive projects, add `.sqa/findings/` to your `.gitignore`.
+Result files are recommended for `.gitignore` by default; track them deliberately if you want a git-versioned history of reviews.
+
+## Defensive comments — the durable home for design intent
+
+When a finding turns out not to need a behavior change but you do want to record "we considered this and here's why we're leaving it," **prefer triaging `auto` with the resolution being "add a clarifying comment near the relevant code."** The next reviewer reads the comment naturally — no metadata to keep in sync, no anchor IDs in source. `ignore` is reserved for findings that should produce no code change at all (false positives, factually wrong analyses, duplicates).
+
+The triage guidelines in `.claude/agents/triage-guidelines.md` cover comment style (length appropriate to the rationale; resolve confusion, don't narrate development history; place near the code it explains). See [`Docs/design.md`](./Docs/design.md) § 6.4 for the full rationale.
 
 ## Development
 

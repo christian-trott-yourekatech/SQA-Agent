@@ -2,24 +2,108 @@
 
 Future ideas to consider, not yet decided.
 
-## Anchor placement: own line vs trailing comment
+## Agent dispatching: context vs focus
 
-Currently `review-file` is free to place `# sqa: <id>` anchors either on their own line or as trailing comments on existing code lines. Trailing placement can push a line past project length limits, triggering linter complaints in the same review pass that just inserted the anchor.
+The framework currently fans out three different phases to subagents —
+review, triage, and auto-resolve — and the fan-out granularity is "one
+subagent per file" in every case. That's a defensible default but it's
+worth questioning across all three phases together, since they share the
+same underlying trade-off: **how to balance fresh-context isolation
+against amortized context-building and cross-finding awareness.**
 
-Consider instructing agents to place anchors on their own line by default — preserves flow, avoids line-length violations, and makes anchors easier to scan visually. The trade-off: the anchor is one line further from the code it points at, which slightly reduces the "this anchor is about *this* line" signal.
+### Auto-resolve
 
-If we go this way, the change lives in `agents/review-file.md` and possibly `agents/fix-orphans.md` (when re-inserting anchors).
+Today `sqa-resolve` dispatches a `resolve-file` subagent per file,
+serialized one at a time (the serialization is deliberate — see prior
+decision on concurrent-write safety).
 
-## Auto-resolve: single agent vs per-finding
+Per-file: each subagent starts fresh, re-reads the file, re-picks up
+project conventions. For 5 findings in `foo.py`, that's 5 bootstraps.
+Cross-finding awareness (two related fixes in the same module) is hard.
 
-Today `sqa-resolve` dispatches a `resolve-file` subagent per file with auto-triaged findings, serialized one at a time (the serialization is deliberate — see prior decision on concurrent-write safety). Each subagent starts fresh and re-reads the file.
+Options to consider:
+- **Multiple files per agent.** Batch several files into one agent's
+  context — amortizes convention-picking-up and lets it see patterns
+  across the batch.
+- **Single agent for the whole queue.** Maximum context reuse, but token
+  budgets get tight on large auto-resolve queues. Open question: can
+  subagents auto-compact mid-run, or does context exhaustion just
+  terminate them? If they can compact, a single-agent approach becomes
+  much more attractive.
+- **Status quo with deliberate batching.** Keep per-file but feed the
+  agent a small "project-conventions" summary harvested from earlier
+  batches.
 
-Two places this is suboptimal:
-- **Repeated context-building.** A subagent fixing 5 findings in `foo.py` reads the same file, picks up the same conventions, and applies the same project style 5 times. A single agent handling all auto-resolves could amortize that.
-- **Cross-finding awareness.** Two findings in the same module sometimes have related fixes (e.g. an extracted utility used by both). Per-file isolation makes that hard to spot.
+### Triage
 
-Counter-considerations:
-- Single-agent runs would have to carefully scope context to avoid blowing token budgets across large auto-resolve queues.
-- Per-file isolation is easier to reason about for reviewer-of-the-reviewer scenarios.
+`triage-file` subagents currently run one-per-file too (during the
+autonomous triage phase of `sqa-resolve`). Each one loads
+`triage-guidelines.md`, reads `findings-for-file`, reads the file, and
+emits triage decisions.
 
-Worth experimenting with after we have more dogfooding data on auto-resolve quality.
+The per-file dispatch makes parallelism cheap, but triage *quality*
+benefits from project-level intuition: knowing what counts as "normal
+style here," what the recurring false-positive patterns are, what the
+project's bias on a given dimension is. That intuition is hard to build
+inside one file's view.
+
+A single triage agent (or batched groups) could develop that intuition
+by seeing patterns across files — at the cost of serializing triage and
+consuming more context per run.
+
+### Review
+
+Each `review-file` subagent does the full review walk against one file.
+
+This is in contrast to the v1 reviewer, which dispatched **separate
+agents per prompt aspect** — each focused on one concern at a time, on
+one file.
+
+Current approach: 1 agent × 1 file = fast and cheap, but each concern
+gets diluted attention. The agent is doing both "scan for everything"
+and "decide what to flag" in one breath.
+
+v1-style focused approach: N agents × 1 file × narrow lens. Each agent
+is single-minded — looks only at its slice — which produces deeper
+findings per topic, but at N× the dispatch and file-read cost.
+
+Open questions worth experimenting with:
+- Is the current breadth-over-depth trade-off costing us real findings,
+  or is breadth working fine in practice?
+- If we did go back to per-aspect agents, can we batch *aspects* across
+  multiple files (one Security agent that scans N files) to recover
+  some of the amortization?
+- Are some aspects (e.g. Security) high-value enough to deserve their
+  own focused agent even if the others stay bundled?
+
+### The shared underlying question
+
+All three of these are facets of the same trade-off, and the right
+answer probably isn't uniform across phases — auto-resolve cares most
+about cross-finding awareness, triage cares most about
+project-intuition, and review cares most about per-aspect focus. Worth
+treating them as independent experiments rather than picking one
+philosophy globally.
+
+## Result-file retention / cleanup
+
+Result files accumulate one-per-session. There's no built-in pruning;
+the user is expected to gitignore them and clean up by hand. If the
+disk-usage cost becomes annoying, consider:
+- `sqa-tool prune --older-than=30d` to remove old result files.
+- An auto-prune knob in `config.toml`.
+
+Deferred until real usage surfaces the need.
+
+## Persistent-findings opt-in
+
+The current design records findings to a per-session result file and
+relies on defensive comments in source for design intent that needs to
+outlive a session (see `Docs/design.md` § 6.4). If that turns out
+insufficient in practice — specifically, if persistent
+"already-considered" findings get re-flagged every review and the cost
+of re-triage hurts enough to matter — consider a `--persistent` opt-in
+mode at init time. Not designed yet; would re-introduce a meaningful
+chunk of bookkeeping (per-finding records, in-source anchors, orphan
+reconciliation) so the bar for adding it is real pain in practice, not
+hypothetical concern.

@@ -1,4 +1,10 @@
-"""Thin wrappers over git commands used by sqa-tool."""
+"""Thin wrappers over git commands used by sqa-tool.
+
+Predicate convention: boolean predicates in this module (``is_repo``,
+``has_commits``) treat any ``GitError`` — including "git executable not
+found" — as "no". Callers that need to distinguish infrastructure failure
+from a negative answer must call ``_git`` directly.
+"""
 
 import difflib
 import subprocess
@@ -12,11 +18,7 @@ class GitError(RuntimeError):
 
 
 def _git(project_root: Path, *args: str, input_text: str | None = None) -> str:
-    """Run `git <args>` in text mode and return stdout.
-
-    Stderr is decoded as UTF-8 with strict errors (matches git's output for
-    the cases this tool invokes).
-    """
+    """Run `git <args>` in text mode and return stdout. See `_run_git` for the encoding contract."""
     return _run_git(project_root, args, input_data=input_text, binary=False).stdout
 
 
@@ -24,7 +26,7 @@ def _git_bytes(project_root: Path, *args: str) -> bytes:
     """Run `git <args>` and return raw stdout bytes.
 
     Used when stdout may not be valid UTF-8 (e.g. binary blobs from `git
-    show`). Shares error handling with `_git`.
+    show`). See `_run_git` for the encoding/error contract.
     """
     return _run_git(project_root, args, binary=True).stdout
 
@@ -44,7 +46,7 @@ def _run_git(
     project_root: Path,
     args: tuple[str, ...],
     *,
-    input_data: bytes | None = ...,
+    input_data: None = ...,
     binary: Literal[True],
 ) -> "subprocess.CompletedProcess[bytes]": ...
 
@@ -53,10 +55,25 @@ def _run_git(
     project_root: Path,
     args: tuple[str, ...],
     *,
-    input_data: str | bytes | None = None,
+    input_data: str | None = None,
     binary: bool = False,
 ) -> "subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]":
-    """Shared subprocess wrapper for `_git` / `_git_bytes`. Raises `GitError`."""
+    """Shared subprocess wrapper for `_git` / `_git_bytes`. Raises `GitError`.
+
+    When `binary=False`, stdout is decoded as UTF-8 strictly; non-UTF-8
+    bytes raise UnicodeDecodeError at the subprocess boundary. On failure,
+    stderr is decoded as UTF-8 with `errors='replace'` so the `GitError`
+    construction itself cannot raise a secondary decode error.
+    """
+    # Internal invariant matching the @overload contract: binary stdin is
+    # not supported. Without this guard, passing input_data with
+    # binary=True would surface as an opaque TypeError from subprocess
+    # (text=False expects bytes, not str). If a binary-stdin caller ever
+    # appears, widen input_data to 'str | bytes | None' instead.
+    assert not (binary and input_data is not None), (
+        "_run_git does not support input_data with binary=True; "
+        "widen input_data to bytes if a binary-stdin caller is needed."
+    )
     try:
         return subprocess.run(
             ["git", *args],
@@ -83,6 +100,7 @@ def is_repo(project_root: Path) -> bool:
     try:
         out = _git(project_root, "rev-parse", "--is-inside-work-tree")
     except GitError:
+        # See module docstring: GitError -> False (predicate convention).
         return False
     return out.strip() == "true"
 
@@ -92,6 +110,7 @@ def has_commits(project_root: Path) -> bool:
     try:
         _git(project_root, "rev-parse", "HEAD")
     except GitError:
+        # See module docstring: GitError -> False (predicate convention).
         return False
     return True
 
@@ -123,10 +142,9 @@ def git_rm(project_root: Path, rel_path: str) -> None:
 def walk_tracked_files(project_root: Path) -> Iterator[tuple[str, Path]]:
     """Yield (rel_path, abs_path) for every git-tracked file that exists on disk.
 
-    Returns nothing if `project_root` isn't a git working tree.
+    Raises `GitError` if `project_root` isn't a git working tree (via the
+    underlying `ls_files` call), matching the module-wide convention.
     """
-    if not is_repo(project_root):
-        return
     for rel in ls_files(project_root):
         abs_path = project_root / rel
         if abs_path.is_file():
@@ -136,21 +154,34 @@ def walk_tracked_files(project_root: Path) -> Iterator[tuple[str, Path]]:
 def hash_object(project_root: Path, rel_paths: list[str]) -> dict[str, str]:
     """Compute git blob hashes for a list of project-relative paths.
 
-    Uses a single `git hash-object --stdin-paths` invocation. Missing files are
-    omitted from the result.
+    Uses a single `git hash-object --stdin-paths` invocation. Paths that do
+    not exist at filter time are omitted from the returned dict. Paths that
+    vanish between the existence check and git reading them from stdin
+    surface as `GitError` rather than being silently dropped.
     """
     if not rel_paths:
         return {}
-    existing = [p for p in rel_paths if (project_root / p).exists()]
-    if not existing:
-        return {}
-    bad = [p for p in existing if "\n" in p]
+    # Validate against newlines on the original input, *before* the
+    # existence filter — otherwise a non-existent path containing a
+    # newline would silently slip through (filtered out before the
+    # check) and the error would never surface.
+    bad = [p for p in rel_paths if "\n" in p]
     if bad:
         raise GitError(
             f"hash_object cannot handle paths containing newlines: {bad!r}. "
             "git hash-object --stdin-paths is newline-delimited and has no -z variant."
         )
-    stdin = "\n".join(str(project_root / p) for p in existing)
+    # Best-effort: paths that vanish between the caller assembling the
+    # list and this call are silently dropped from the returned dict.
+    # Callers that need completeness must check the returned dict
+    # against their input (mark_reviewed and needs_review both do).
+    existing = [p for p in rel_paths if (project_root / p).exists()]
+    if not existing:
+        return {}
+    # Pass relative paths verbatim — _run_git sets cwd=project_root, so
+    # git hash-object resolves them correctly, and input/output paths
+    # match without an extra normalization step.
+    stdin = "\n".join(existing)
     out = _git(project_root, "hash-object", "--stdin-paths", input_text=stdin)
     hashes = out.splitlines()
     return dict(zip(existing, hashes, strict=True))
@@ -166,19 +197,73 @@ def diff_blob_to_file(project_root: Path, blob: str, rel_path: str) -> str:
     file_path = project_root / rel_path
     file_exists = file_path.exists()
     if not blob and not file_exists:
+        # No prior blob and no file on disk — nothing to diff. Callers
+        # (diff_since_review) validate this upfront and error before
+        # calling; this branch is a safety net so this function never
+        # raises on a degenerate input.
         return ""
+    # Design note: the added/removed branches use difflib rather than git
+    # so this function does no filesystem or git-object setup beyond
+    # reading the on-disk file (no temp files, no `git diff --no-index`
+    # plumbing). The modify case delegates to `git diff` for byte-exact
+    # output on the dominant path. The synthetic-diff headers and the
+    # "\ No newline at end of file" marker are formatted in
+    # _format_synthetic_diff to stay close to git's output.
     if not blob:
-        raw = file_path.read_bytes()
-        if b"\x00" in raw:
-            # Match git's behavior on the prior-blob path for binary content.
-            return f"Binary files /dev/null and b/{rel_path} differ\n"
-        return _format_synthetic_diff(rel_path, "", raw.decode("utf-8", errors="replace"))
+        return _synthetic_side_diff(rel_path, file_path.read_bytes(), "added")
     if not file_exists:
         raw = _git_bytes(project_root, "show", blob)
-        if b"\x00" in raw:
-            return f"Binary files a/{rel_path} and /dev/null differ\n"
-        return _format_synthetic_diff(rel_path, raw.decode("utf-8", errors="replace"), "")
+        return _synthetic_side_diff(rel_path, raw, "removed")
     return _git(project_root, "diff", blob, "--", rel_path)
+
+
+def _synthetic_side_diff(rel_path: str, raw: bytes, side: Literal["added", "removed"]) -> str:
+    """Render a synthetic unified diff for the added- or removed-side cases.
+
+    Returns git's 'Binary files ... differ' marker for content that looks
+    binary (NUL heuristic) or that fails strict UTF-8 decode — the second
+    case covers non-UTF-8 text (e.g. latin-1) that the NUL heuristic
+    doesn't flag but still can't be rendered as a synthetic text diff.
+    Otherwise returns a unified diff with the decoded content placed on
+    the appropriate side.
+    """
+    marker = _binary_diff_marker(raw, rel_path, side=side)
+    if marker is not None:
+        return marker
+    try:
+        decoded = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return _format_binary_marker(rel_path, side=side)
+    if side == "added":
+        return _format_synthetic_diff(rel_path, "", decoded)
+    return _format_synthetic_diff(rel_path, decoded, "")
+
+
+def _binary_diff_marker(
+    raw: bytes,
+    rel_path: str,
+    *,
+    side: Literal["added", "removed"],
+) -> str | None:
+    """Return git's 'Binary files ... differ' line if `raw` looks binary, else None.
+
+    Uses a NUL-byte heuristic, which diverges from git's richer detection
+    (which inspects the first ~8000 bytes for NULs and various
+    non-printable characters). Callers that have separately determined
+    the content can't be rendered as text — for instance, because a
+    UTF-8 strict decode raised UnicodeDecodeError — should call
+    ``_format_binary_marker`` directly to bypass the heuristic.
+    """
+    if b"\x00" not in raw:
+        return None
+    return _format_binary_marker(rel_path, side=side)
+
+
+def _format_binary_marker(rel_path: str, *, side: Literal["added", "removed"]) -> str:
+    """Format git's 'Binary files ... differ' line for the synthetic-diff branches."""
+    if side == "added":
+        return f"Binary files /dev/null and b/{rel_path} differ\n"
+    return f"Binary files a/{rel_path} and /dev/null differ\n"
 
 
 def _format_synthetic_diff(rel_path: str, old: str, new: str) -> str:

@@ -1,76 +1,110 @@
-"""sqa-tool triage / resolve — finding state transitions."""
+"""sqa-tool triage / resolve — finding state transitions on the active result.
+
+Both commands operate **only** on the most recent (active) result file.
+Historical results are read-only; pointing these commands at one via
+``--from`` would be a foot-gun, so we don't offer that flag here. The state
+machine itself is implemented in :mod:`sqa_tool.result_file`; this module
+is the thin CLI wrapper.
+"""
 
 import argparse
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
-from sqa_tool import anchors, findings, git_ops
+from sqa_tool import paths
+from sqa_tool.result_file import (
+    Finding,
+    StateTransitionError,
+    active_result_or_exit_message,
+    apply_resolve,
+    apply_triage,
+    find_by_id,
+    with_locked_result,
+)
 
 
-def _find_files_with_anchor(project_root: Path, finding_id: str) -> list[Path]:
-    # OSError is intentionally NOT caught here. resolve() is destructive
-    # (strips anchors then deletes the finding JSON), so silently skipping an
-    # unreadable file would split the action — leaving an orphan anchor with
-    # no matching JSON and no warning. orphans._collect_anchored_ids does
-    # suppress OSError because that path is read-only and self-healing.
-    out = []
-    for _rel, path in git_ops.walk_tracked_files(project_root):
-        try:
-            ids = anchors.find_anchors_for_orphan_scan(path)
-        except UnicodeDecodeError:
-            continue
-        if finding_id in ids:
-            out.append(path)
-    return out
+def _mutate_active_finding(
+    project_root: Path,
+    args: argparse.Namespace,
+    mutate: Callable[[Finding], None],
+) -> tuple[int, Finding] | None:
+    """Shared scaffolding for the two finding-mutation commands.
+
+    Validates ``args.id`` (must be a positive int — argparse has already
+    enforced int-ness via ``type=int``, so the only check left is the
+    "> 0" guard), resolves the active result path, takes the per-result
+    file lock, looks up the finding, and runs ``mutate(finding)`` under
+    the lock. Returns ``(finding_id, finding)`` on success so callers
+    can print a confirmation message; returns ``None`` and prints an
+    appropriate error to stderr on any failure (invalid id, no active
+    result, unknown id, illegal state transition). Callers translate the
+    ``None`` into a non-zero CLI exit.
+    """
+    finding_id = args.id
+    if finding_id <= 0:
+        print(
+            f"error: invalid finding ID: {finding_id!r} (expected a positive int)",
+            file=sys.stderr,
+        )
+        return None
+
+    result_path = active_result_or_exit_message(paths.sqa_dir(project_root))
+    if result_path is None:
+        return None
+
+    try:
+        with with_locked_result(result_path) as (_, findings):
+            f = find_by_id(findings, finding_id)
+            mutate(f)
+            # Snapshot the finding under the lock so the caller can read
+            # post-mutation fields (e.g. status) without re-acquiring it.
+            return finding_id, f
+    except KeyError:
+        print(f"error: no finding with id {finding_id}", file=sys.stderr)
+        return None
+    except StateTransitionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return None
 
 
 def triage(project_root: Path, args: argparse.Namespace) -> int:
-    try:
-        f = findings.load_finding(project_root, args.id)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"error: {e}", flush=True)
+    """Set triage decision and rationale on a finding in the active result.
+
+    Honors the state machine in :mod:`sqa_tool.result_file`: ``ignore``
+    flips status to ``resolved``; un-ignoring (from ``ignore+resolved``
+    back to ``auto``/``interactive``) flips status to ``open``;
+    re-triaging an action-resolved finding is rejected.
+    """
+    result = _mutate_active_finding(
+        project_root,
+        args,
+        lambda f: apply_triage(f, args.decision, args.rationale),
+    )
+    if result is None:
         return 1
-    f.triage = args.decision
-    f.rationale = args.rationale
-    findings.save_finding(project_root, args.id, f)
-    print(f"triaged {args.id}: {args.decision}", flush=True)
+    finding_id, f = result
+    # `f.status` is read while the snapshot is still fresh — the
+    # confirmation stays honest against the state machine even if the
+    # transition rules later change (e.g. some `auto` re-triage starts
+    # implying status=resolved).
+    print(f"triaged {finding_id}: {args.decision} ({f.status})")
     return 0
 
 
 def resolve(project_root: Path, args: argparse.Namespace) -> int:
-    """Mark a finding resolved: strip its anchors from source and delete the JSON.
+    """Mark a finding resolved by flipping its ``status`` to ``resolved``.
 
-    The `--rationale` argument is accepted (and echoed back as confirmation
-    output) but not persisted — under the "git is the audit trail" model, the
-    explanation for the fix lives in the user's commit message rather than in
-    a JSON field that gets deleted moments later.
+    Rejects untriaged findings (need triage first) and already-resolved
+    findings (idempotency would mask bugs).
     """
-    # Reject malformed IDs up front so an invalid ID can't slip into the
-    # destructive cleanup path below — load_finding raises ValueError for
-    # both invalid-ID-format and corrupt-JSON, but only the second deserves
-    # to proceed.
-    if not findings.is_valid_id(args.id):
-        print(f"error: Invalid finding ID: {args.id!r}", flush=True)
+    result = _mutate_active_finding(
+        project_root,
+        args,
+        lambda f: apply_resolve(f, args.rationale),
+    )
+    if result is None:
         return 1
-    try:
-        findings.load_finding(project_root, args.id)
-    except FileNotFoundError as e:
-        # Unknown ID — abort. We don't perform destructive cleanup for an ID
-        # whose JSON doesn't exist (likely a typo, or stale anchors from a
-        # previously-resolved finding that should be cleaned via the orphans
-        # path instead).
-        print(f"error: {e}", flush=True)
-        return 1
-    except ValueError as e:
-        # Corrupt JSON. The user has explicitly requested resolution, the JSON
-        # is going to be deleted anyway, and aborting would leave anchors with
-        # no tool path to clean them up (manual source edits). Proceed loudly.
-        print(f"warning: {e}", flush=True)
-        print(
-            f"resolving {args.id} despite corrupt JSON: stripping anchors and deleting the file.",
-            flush=True,
-        )
-    for path in _find_files_with_anchor(project_root, args.id):
-        anchors.remove_anchor(path, args.id)
-    findings.delete_finding(project_root, args.id)
-    print(f"resolved {args.id}: {args.rationale}", flush=True)
+    finding_id, _ = result
+    print(f"resolved {finding_id}: {args.rationale}")
     return 0

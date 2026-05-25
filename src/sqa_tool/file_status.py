@@ -1,95 +1,102 @@
 """fcntl-locked read-modify-write of .sqa/file_status.json."""
 
-import contextlib
 import fcntl
 import json
-import os
-from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from sqa_tool import paths
+from sqa_tool import _locked_file, paths
 
-
-@contextlib.contextmanager
-def _locked(path: Path, lock_op: int = fcntl.LOCK_EX) -> Iterator[int]:
-    """Acquire an fcntl lock on `path`. Creates the file if missing (race-free).
-
-    `lock_op` is `fcntl.LOCK_EX` (writers) or `fcntl.LOCK_SH` (readers).
-    Initializes empty files with '{}\\n' only after the lock is held, so
-    concurrent first-use callers can't clobber each other's init.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, lock_op)
-        if os.fstat(fd).st_size == 0 and lock_op == fcntl.LOCK_EX:
-            os.write(fd, b"{}\n")
-            os.lseek(fd, 0, os.SEEK_SET)
-        yield fd
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
-
-
-def _read_all(fd: int) -> str:
-    """Seek to start and read the entire file from `fd`, decoded as UTF-8."""
-    os.lseek(fd, 0, os.SEEK_SET)
-    return os.read(fd, os.fstat(fd).st_size).decode()
+# Seed written into a newly-created file_status.json so the first reader
+# sees a parseable empty mapping rather than zero bytes. The seed is
+# applied under `LOCK_EX` by `_locked_file.locked` — see its docstring
+# for the race-free-init contract.
+_SEED = b"{}\n"
 
 
 def load(project_root: Path) -> dict[str, str]:
     """Load the file_status mapping (rel_path → blob hash).
 
     Returns `{}` if the file is missing or empty. Empty-file handling
-    matters because `_locked` only seeds `{}` under `LOCK_EX`; a `LOCK_SH`
-    reader observing a zero-byte file (e.g. between `O_CREAT` and the
-    first writer's `_write_locked`) would otherwise feed an empty string
-    to `_parse_status` and trip a JSON-decode error.
+    matters because `_locked_file.locked` only seeds `{}` under
+    `LOCK_EX`; a `LOCK_SH` reader observing a zero-byte file (e.g.
+    between `O_CREAT` and the first writer's `write_all`) would
+    otherwise feed an empty string to `_parse_status` and trip a
+    JSON-decode error.
     """
     path = paths.file_status_path(project_root)
-    if not path.exists():
-        return {}
-    with _locked(path, fcntl.LOCK_SH) as fd:
-        raw = _read_all(fd)
+    with _locked_file.locked(path, fcntl.LOCK_SH, create_with=_SEED) as fd:
+        raw = _locked_file.read_all(fd)
         if raw == "":
             return {}
         return _parse_status(raw, path)
 
 
 def _parse_status(raw: str, path: Path) -> dict[str, str]:
-    """Parse the locked file's contents, raising on malformed JSON."""
+    """Parse the locked file's contents, raising on malformed JSON or
+    wrong shape.
+
+    Three failure modes all surface as a single ``RuntimeError`` whose
+    message starts with ``"Corrupt file_status at <path>: ..."``:
+
+      - Malformed JSON (caught at ``json.loads``).
+      - Valid JSON whose top level isn't a dict (e.g. ``[]``, ``"foo"``,
+        ``123``). Downstream ``update``/``remove`` would otherwise crash
+        with a cryptic ``TypeError`` while trying to ``__setitem__`` on
+        the wrong type.
+      - Valid dict whose values aren't all strings (e.g. someone
+        hand-edited a hash to an int). Reads would later mis-compare
+        the stored value against fresh ``git hash-object`` output and
+        silently re-flag the file as changed.
+
+    Recovery is not attempted (no "drop bad entries, keep good ones") —
+    ``file_status.json`` is tool-internal state and any deviation
+    indicates corruption that should surface to the user, not be
+    silently massaged into a different shape.
+    """
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Corrupt file_status at {path}: {e}") from e
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"Corrupt file_status at {path}: expected JSON object at top "
+            f"level, got {type(data).__name__}"
+        )
+    # Value check matters in practice — a hand-edited hash → int would
+    # otherwise propagate quietly. (Keys are always str: json.loads of a
+    # JSON object guarantees it.)
+    for v in data.values():
+        if not isinstance(v, str):
+            raise RuntimeError(
+                f"Corrupt file_status at {path}: every value must be a "
+                f"string; got value={type(v).__name__}"
+            )
+    return data
 
 
-def _write_locked(fd: int, status: dict[str, str]) -> None:
-    """Write `status` as JSON through the already-locked fd."""
-    new_text = json.dumps(status, indent=2, sort_keys=True) + "\n"
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.ftruncate(fd, 0)
-    os.write(fd, new_text.encode())
+def _serialize(status: dict[str, str]) -> str:
+    """Serialize the mapping with the deterministic format the persisted
+    file uses (``indent=2``, ``sort_keys=True``, trailing newline).
 
-
-def _mutate(project_root: Path, fn: Callable[[dict[str, str]], None]) -> None:
-    """Run a locked read-modify-write cycle, applying `fn` to the dict in place."""
-    path = paths.file_status_path(project_root)
-    with _locked(path) as fd:
-        status = _parse_status(_read_all(fd), path)
-        fn(status)
-        _write_locked(fd, status)
+    Pinned here so format choices stay in one place and so the
+    persistence contract is easy to inspect alongside ``_parse_status``.
+    """
+    return json.dumps(status, indent=2, sort_keys=True) + "\n"
 
 
 def update(project_root: Path, rel_path: str, blob_hash: str) -> None:
     """Update one entry under lock (read-modify-write)."""
-    _mutate(project_root, lambda status: status.__setitem__(rel_path, blob_hash))
+    path = paths.file_status_path(project_root)
+    with _locked_file.locked(path, create_with=_SEED) as fd:
+        status = _parse_status(_locked_file.read_all(fd), path)
+        status[rel_path] = blob_hash
+        _locked_file.write_all(fd, _serialize(status))
 
 
 def remove(project_root: Path, rel_path: str) -> None:
     """Remove one entry under lock."""
-
-    def _pop(status: dict[str, str]) -> None:
+    path = paths.file_status_path(project_root)
+    with _locked_file.locked(path, create_with=_SEED) as fd:
+        status = _parse_status(_locked_file.read_all(fd), path)
         status.pop(rel_path, None)
-
-    _mutate(project_root, _pop)
+        _locked_file.write_all(fd, _serialize(status))

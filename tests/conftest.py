@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from sqa_tool.cli import main as cli_main
+from sqa_tool.commands.init import run as init_run
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -26,16 +27,25 @@ def _commit(project: Path, msg: str = "x") -> None:
     _git(project, "commit", "-q", "-m", msg)
 
 
-def _run(monkeypatch: pytest.MonkeyPatch, project: Path, *argv: str, expected_exit: int = 0) -> int:
+def run_cli(
+    monkeypatch: pytest.MonkeyPatch, project: Path, *argv: str, expected_exit: int = 0
+) -> int:
     # monkeypatch.chdir is per-test scoped and unwinds automatically — safe under
     # parallel runners (pytest-xdist) where process-global os.chdir would race.
     monkeypatch.chdir(project)
-    rc = cli_main(list(argv))
+    # Some handlers exit via sys.exit() rather than returning an int (e.g.
+    # the shared read-side error path), so catch SystemExit and treat its
+    # code as the exit code. None/missing code is treated as 0 per Python.
+    try:
+        rc = cli_main(list(argv))
+    except SystemExit as e:
+        code = e.code
+        rc = 0 if code is None else int(code)
     assert rc == expected_exit, f"sqa-tool {' '.join(argv)} exited {rc}"
     return rc
 
 
-def _capture(
+def capture_cli(
     capsys,
     monkeypatch: pytest.MonkeyPatch,
     project: Path,
@@ -44,7 +54,7 @@ def _capture(
 ) -> str:
     """Run sqa-tool and return its captured stdout. Drains any prior buffered output first."""
     capsys.readouterr()
-    _run(monkeypatch, project, *argv, expected_exit=expected_exit)
+    run_cli(monkeypatch, project, *argv, expected_exit=expected_exit)
     return capsys.readouterr().out
 
 
@@ -64,7 +74,17 @@ def project(tmp_path: Path) -> Path:
 @pytest.fixture
 def initialized(project: Path) -> Path:
     """Project with sqa-tool init already run."""
-    from sqa_tool.commands.init import run as init_run
-
     init_run(project)
     return project
+
+
+@pytest.fixture
+def configured(initialized: Path) -> Path:
+    """Initialized project with .sqa/config.toml seeded to include src/**/*.py.
+
+    Convenience for needs-review tests that want the sample src file picked
+    up by the default include glob.
+    """
+    cfg = initialized / ".sqa" / "config.toml"
+    cfg.write_text('[files]\ninclude = ["src/**/*.py"]\nexclude = []\n')
+    return initialized

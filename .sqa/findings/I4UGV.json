@@ -1,9 +1,0 @@
-{
-  "message": "_find_project_root short-circuits on .git/ before checking ancestors for .sqa/. If a project has nested git repos (submodules, vendored repos), running sqa-tool from inside the inner repo will pick the inner .git as project root and fail _require_initialized, even when the outer project has a valid .sqa/. Consider preferring .sqa/ over .git/ in the walk, or walking the full chain and choosing the closest .sqa/-bearing ancestor.",
-  "severity": "info",
-  "triage": "interactive",
-  "rationale": "_find_project_root stops at the first ancestor with either .sqa/ or .git/, so a nested git repo (submodule, vendored repo) inside a project that has .sqa/ at an outer level will pick the inner .git as root and fail _require_initialized. Real edge case worth addressing, but there are multiple valid approaches with user-visible behavior implications: (a) walk the full chain and prefer the closest .sqa/-bearing ancestor, falling back to the closest .git/ only if no .sqa/ is found; (b) walk the full chain and prefer ANY .sqa/ ancestor over any .git/ ancestor; (c) add an explicit --root override or SQA_ROOT env var. Each has trade-offs around how aggressively to override an inner .git/ with an outer .sqa/. Needs project owner input on which behavior is desired. Note: line 25 already carries a '# sqa: I4UGV' marker, indicating prior consideration.",
-  "related_files": [
-    "src/sqa_tool/cli.py"
-  ]
-}
