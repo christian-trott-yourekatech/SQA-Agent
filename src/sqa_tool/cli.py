@@ -10,6 +10,7 @@ from sqa_tool.commands import (
     categories,
     diff_since_review,
     init,
+    mark_all_reviewed,
     mark_reviewed,
     needs_review,
     record_finding,
@@ -201,6 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
     mr = sub.add_parser("mark-reviewed", help="Record a file's current blob hash")
     mr.add_argument("path")
 
+    sub.add_parser(
+        "mark-all-reviewed",
+        help="Record current blob hashes for every file in the candidate set",
+    )
+
     ff = sub.add_parser(
         "findings-for-file",
         help="Findings whose `file` or `related` list matches the given path",
@@ -256,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": lambda: show.status(project_root, args),
         "needs-review": lambda: needs_review.run(project_root, args),
         "mark-reviewed": lambda: mark_reviewed.run(project_root, args),
+        "mark-all-reviewed": lambda: mark_all_reviewed.run(project_root, args),
         "findings-for-file": lambda: show.for_file(project_root, args),
         "triage": lambda: triage.triage(project_root, args),
         "resolve": lambda: triage.resolve(project_root, args),

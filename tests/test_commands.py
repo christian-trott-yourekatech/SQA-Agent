@@ -418,3 +418,74 @@ def test_needs_review_after_edit(configured: Path, capsys, monkeypatch):
     # needs-review hashes the working tree, not HEAD — no commit needed after the edit.
     (configured / "src" / "sample.py").write_text("def hello(): return 'edited'\n")
     assert capture_cli(capsys, monkeypatch, configured, "needs-review").strip() == "src/sample.py"
+
+
+# ── mark-all-reviewed ────────────────────────────────────────────────
+
+
+def test_mark_all_reviewed_then_needs_review_empty(configured: Path, capsys, monkeypatch):
+    """Bulk-marks every candidate file so the immediate next ``needs-review`` is empty."""
+    run_cli(monkeypatch, configured, "mark-all-reviewed")
+    assert capture_cli(capsys, monkeypatch, configured, "needs-review", "--count").strip() == "0"
+
+
+def test_mark_all_reviewed_reports_count(configured: Path, capsys, monkeypatch):
+    """Stdout summary names the count so an operator (or agent) sees how many files were touched."""
+    out = capture_cli(capsys, monkeypatch, configured, "mark-all-reviewed")
+    assert out.strip() == "Marked 1 file(s) as reviewed."
+
+
+def test_mark_all_reviewed_after_edit_picks_up_change(configured: Path, capsys, monkeypatch):
+    """After bulk-marking, a subsequent edit re-surfaces just the edited file."""
+    run_cli(monkeypatch, configured, "mark-all-reviewed")
+    (configured / "src" / "sample.py").write_text("def hello(): return 'edited'\n")
+    assert capture_cli(capsys, monkeypatch, configured, "needs-review").strip() == "src/sample.py"
+
+
+def test_mark_all_reviewed_empty_candidate_set(initialized: Path, capsys, monkeypatch):
+    """When .sqa/config.toml has no matching include patterns the bulk-mark is a
+    no-op on stdout — ``_candidate_files`` has already emitted its
+    misconfiguration warning to stderr, so we don't print a misleading
+    "Marked 0".
+    """
+    # Default init writes include = [] so the candidate set is empty.
+    out = capture_cli(capsys, monkeypatch, initialized, "mark-all-reviewed")
+    assert out == ""
+
+
+def test_mark_all_reviewed_handles_multiple_files(configured: Path, capsys, monkeypatch):
+    """Two tracked files in scope: bulk-mark covers both in one call, then
+    ``needs-review`` is empty.
+    """
+    second = configured / "src" / "second.py"
+    second.write_text("def foo(): return 1\n")
+    subprocess.run(["git", "add", "."], cwd=configured, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "add second"],
+        cwd=configured,
+        check=True,
+        capture_output=True,
+    )
+    out = capture_cli(capsys, monkeypatch, configured, "mark-all-reviewed")
+    assert out.strip() == "Marked 2 file(s) as reviewed."
+    assert capture_cli(capsys, monkeypatch, configured, "needs-review", "--count").strip() == "0"
+
+
+def test_mark_all_reviewed_upsert_preserves_existing_entries(configured: Path, capsys, monkeypatch):
+    """Stale entries for files no longer in the candidate set are preserved
+    (upsert semantics).  This is the behavior the command's docstring
+    documents — replacing would be a one-way wipe.
+    """
+    import json
+
+    # Seed a stale entry that's not in the current candidate set.
+    file_status_path = configured / ".sqa" / "file_status.json"
+    file_status_path.write_text(json.dumps({"removed/old.py": "deadbeef" * 5}, indent=2) + "\n")
+
+    run_cli(monkeypatch, configured, "mark-all-reviewed")
+
+    contents = json.loads(file_status_path.read_text())
+    # The stale entry is preserved alongside the freshly-hashed current file.
+    assert "removed/old.py" in contents
+    assert contents["removed/old.py"] == "deadbeef" * 5
+    assert "src/sample.py" in contents
